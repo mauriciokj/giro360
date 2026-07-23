@@ -1,0 +1,24 @@
+name: giro360_capture_example
+description: Aplicativo mínimo de exemplo para o giro360_capture.
+publish_to: "none"
+version: 0.0.1+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  giro360_capture:
+    path: ../
+  path_provider: ^2.1.5
+
+dev_dependencies:
+  integration_test:
+    sdk: flutter
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
