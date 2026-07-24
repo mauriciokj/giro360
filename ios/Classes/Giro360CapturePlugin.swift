@@ -78,6 +78,14 @@ public final class Giro360CapturePlugin: NSObject, FlutterPlugin, FlutterStreamH
           )
         )
       }
+    case "processVideo":
+      result(
+        FlutterError(
+          code: "video_import_unsupported",
+          message: "A importação de vídeo está disponível no Android nesta versão.",
+          details: nil
+        )
+      )
     case "status":
       result(coordinator.status())
     case "cancelCapture":

@@ -9,18 +9,18 @@ coerente e executa a costura OpenCV no próprio aparelho.
 | Plataforma | Rastreamento | Captura dos frames | Costura |
 | --- | --- | --- | --- |
 | iOS 13+ | ARKit 6-DoF | Vídeo H.264 | OpenCV embarcado |
-| Android 7+ (API 24) | ARCore 6-DoF ou vídeo temporizado | Keyframes diretos ou vídeo H.264 | OpenCV 4.14 embarcado |
+| Android 7+ (API 24) | ARCore 6-DoF ou movimento visual ORB | Keyframes diretos ou vídeo importado | OpenCV 4.14 embarcado |
 
 No Android, o SDK escolhe automaticamente entre `arTracked`, quando os sensores
-e o ARCore estão disponíveis, e `videoOnly`, quando há apenas câmera traseira.
-O modo por vídeo grava duas voltas de 15 segundos, extrai 30 candidatos por
-volta e envia uma única volta coerente ao mesmo motor OpenCV.
+e o ARCore estão disponíveis, e `videoOnly`, quando o panorama será produzido
+a partir de um vídeo escolhido pelo aplicativo hospedeiro. A gravação CameraX
+permanece no código como alternativa experimental, mas não é o fluxo padrão.
 
 ## Sensores e requisitos
 
 | Requisito | Obrigatório | Uso |
 | --- | --- | --- |
-| Câmera traseira | Sim | Imagens e rastreamento visual |
+| Câmera traseira | Modo AR | Imagens e rastreamento visual durante a captura |
 | Acelerômetro | Modo AR | Gravidade, estabilidade e fusão inercial |
 | Giroscópio | Modo AR | Rotação precisa entre os keyframes |
 | ARKit ou ARCore certificado | Modo AR | Pose 6-DoF e translação da lente |
@@ -31,9 +31,11 @@ volta e envia uma única volta coerente ao mesmo motor OpenCV.
 
 No Android, ter acelerômetro e giroscópio não basta para `arTracked`: o modelo
 também precisa ser certificado pelo ARCore. Sem esses recursos, `videoOnly`
-continua disponível desde que câmera, permissão e OpenCV estejam prontos. Esse
-modo não mede a pose física; velocidade constante e duas voltas no mesmo sentido
-são importantes para distribuir os frames corretamente.
+continua disponível desde que o OpenCV esteja pronto. Esse
+modo não exige câmera, permissão ou sensores dentro do app: ele recebe um MP4 já
+gravado e mede o deslocamento entre amostras usando ORB. Grave duas voltas no
+mesmo sentido, com o celular em pé e girando em torno da lente. A velocidade pode
+variar, pois os frames são distribuídos pelo movimento visual acumulado.
 
 ## Diagnóstico ao abrir
 
@@ -42,7 +44,7 @@ final controller = Giro360CaptureController();
 var support = await controller.supportInfo();
 
 print(support.supported); // o hardware pode executar a captura
-print(support.ready);     // permissão e serviço AR estão prontos
+print(support.ready);     // os requisitos do modo recomendado estão prontos
 print(support.recommendedMode); // arTracked, videoOnly ou unavailable
 print(support.reason);    // motivo legível para o usuário
 
@@ -66,14 +68,14 @@ dependencies:
   giro360_capture:
     git:
       url: git@github.com:mauriciokj/giro360.git
-      ref: codex/video-only-fallback
+      ref: codex/imported-video-pipeline
   path_provider: ^2.1.5
 ```
 
 Também é possível usar `https://github.com/mauriciokj/giro360.git` em
 repositórios públicos.
 
-Esta é a referência de teste Android `0.1.0-dev.2`. A tag `v0.1.0` será criada
+Esta é a referência de teste Android `0.1.0-dev.3`. A tag `v0.1.0` será criada
 depois da validação das duas modalidades em mais aparelhos.
 
 ### iOS
@@ -94,7 +96,7 @@ O host precisa usar `minSdk` 24 ou superior. Permissão de câmera, recursos de
 sensores e metadado ARCore opcional são mesclados automaticamente pelo plugin.
 O pacote usa ARCore `1.54.0`, OpenCV `4.14.0`, CMake e NDK.
 
-## Captura
+## Captura com AR
 
 ```dart
 final controller = Giro360CaptureController();
@@ -118,7 +120,7 @@ final result = await controller.start(
 );
 
 print(result.panorama.file.path);
-print(result.recordedVideoFile?.path); // iOS e Android no modo videoOnly
+print(result.recordedVideoFile?.path);
 
 await events.cancel();
 await controller.dispose();
@@ -136,6 +138,36 @@ const Stack(
 )
 ```
 
+## Processamento de vídeo importado
+
+O seletor de arquivos pertence ao aplicativo hospedeiro. Depois que ele obtiver
+um caminho local, entregue o arquivo ao SDK:
+
+```dart
+final selectedVideo = File(caminhoEscolhido);
+final root = await getApplicationSupportDirectory();
+
+final result = await controller.processVideo(
+  sourceVideo: selectedVideo,
+  sessionDirectory: Directory('${root.path}/giro360/minha-importacao'),
+  config: const Giro360CaptureConfig(
+    requiredLaps: 2,
+    binCount: 30,
+    alignmentMode: GuidedAlignmentMode.videoRefine,
+  ),
+);
+
+print(result.panorama.file.path);
+print(result.captureStatus.visualMotionReliable);
+print(result.captureStatus.visualMotionMatchedPairCount);
+```
+
+O SDK analisa seis amostras para cada alvo, até 360 no perfil padrão. Ele estima
+a direção e o movimento horizontal, separa as duas voltas e prioriza a que tiver
+menor erro angular; a nitidez desempata seleções equivalentes. Somente os 30
+frames finais são extraídos novamente na resolução original e enviados ao
+stitcher.
+
 ## Arquivos gerados
 
 Ambas as plataformas geram:
@@ -147,9 +179,9 @@ giro360_panorama.jpg
 
 O iOS também mantém `giro360_capture.mp4` e
 `giro360_video_timeline.json`. No Android, `arTracked` salva
-`giro360_android_timeline.json` com `captureSource: directFrames`; `videoOnly`
+`giro360_android_timeline.json` com `captureSource: directFrames`; a importação
 mantém `giro360_capture.mp4` e `giro360_video_only_timeline.json` com
-`captureSource: videoOnly`.
+`captureSource: importedVideo` e métricas da análise ORB.
 
 ## Exemplo e validação
 
@@ -171,8 +203,8 @@ flutter build ios --release --no-codesign
 ```
 
 O build Android, o carregamento do OpenCV e o diagnóstico foram validados em um
-Samsung SM-A127M. Nesse aparelho sem giroscópio e sem ARCore, o fallback abriu a
-prévia CameraX, gravou o MP4, extraiu 60 frames e entregou a volta selecionada ao
-OpenCV sem encerrar o processo. A qualidade do panorama `videoOnly` ainda deve
-ser validada com uma rotação manual real; `arTracked` ainda requer teste em
-hardware Android certificado.
+Samsung SM-A127M. Nesse aparelho sem giroscópio e sem ARCore, o seletor nativo
+abriu sem solicitar câmera e importou um vídeo de 1:03. O refinamento atual usa
+até 360 amostras antes de enviar 30 frames em resolução original ao OpenCV. A
+gravação CameraX continua disponível internamente para experimentos futuros;
+`arTracked` ainda requer teste em hardware Android certificado.

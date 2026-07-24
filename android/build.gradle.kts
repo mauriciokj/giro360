@@ -1,5 +1,5 @@
 group = "com.giro360.giro360_capture"
-version = "0.1.0-dev.2"
+version = "0.1.0-dev.3"
 
 buildscript {
     val kotlinVersion = "2.2.20"

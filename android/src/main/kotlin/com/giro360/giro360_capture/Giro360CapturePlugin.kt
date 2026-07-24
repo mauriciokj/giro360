@@ -71,6 +71,7 @@ class Giro360CapturePlugin :
             "supportInfo" -> supportInfo(result::success)
             "prepare" -> prepare(result)
             "startCapture" -> startCapture(call, result)
+            "processVideo" -> processVideo(call, result)
             "status" -> result.success(activeStatus())
             "cancelCapture" -> {
                 cancelActiveCapture()
@@ -91,6 +92,13 @@ class Giro360CapturePlugin :
     }
 
     private fun prepare(result: MethodChannel.Result) {
+        val availability = ArCoreApk.getInstance().checkAvailability(applicationContext)
+        val canUseTrackedMode = hasRearCamera() && hasMotionHardware() && availability.isSupported
+        if (!canUseTrackedMode) {
+            supportInfo(result::success)
+            return
+        }
+
         val currentActivity = activity
         if (currentActivity == null) {
             result.error(
@@ -194,13 +202,15 @@ class Giro360CapturePlugin :
                     requiredLaps = requiredLaps,
                 )
             } else {
-                activeCaptureMode = "video_only"
-                coordinator.pause()
-                videoCoordinator.startCapture(
-                    activity = currentActivity,
-                    directoryPath = directoryPath,
-                    binCount = binCount,
-                    requiredLaps = requiredLaps,
+                // Opção experimental preservada para uma futura captura CameraX:
+                // videoCoordinator.startCapture(
+                //     activity = currentActivity,
+                //     directoryPath = directoryPath,
+                //     binCount = binCount,
+                //     requiredLaps = requiredLaps,
+                // )
+                error(
+                    "O modo sem AR recebe um vídeo existente. Use processVideo().",
                 )
             }
             result.success(null)
@@ -208,6 +218,45 @@ class Giro360CapturePlugin :
             result.error(
                 "capture_start_failed",
                 "Não foi possível iniciar a captura: ${error.localizedMessage}",
+                null,
+            )
+        }
+    }
+
+    private fun processVideo(call: MethodCall, result: MethodChannel.Result) {
+        val sourceVideoPath = call.argument<String>("sourceVideoPath")
+        val directoryPath = call.argument<String>("directoryPath")
+        if (sourceVideoPath.isNullOrBlank() || directoryPath.isNullOrBlank()) {
+            result.error(
+                "invalid_arguments",
+                "O vídeo de origem e o diretório de saída são obrigatórios.",
+                null,
+            )
+            return
+        }
+        if (!nativeStitchingAvailable) {
+            result.error(
+                "opencv_not_ready",
+                "O motor OpenCV não foi carregado neste aparelho.",
+                null,
+            )
+            return
+        }
+
+        try {
+            activeCaptureMode = "imported_video"
+            coordinator.pause()
+            videoCoordinator.processVideo(
+                sourceVideoPath = sourceVideoPath,
+                directoryPath = directoryPath,
+                binCount = (call.argument<Int>("binCount") ?: 30).coerceIn(24, 90),
+                requiredLaps = (call.argument<Int>("requiredLaps") ?: 2).coerceIn(1, 3),
+            )
+            result.success(null)
+        } catch (error: Throwable) {
+            result.error(
+                "video_import_failed",
+                "Não foi possível importar o vídeo: ${error.localizedMessage}",
                 null,
             )
         }
@@ -233,7 +282,7 @@ class Giro360CapturePlugin :
         val arCoreInstalled = availability == ArCoreApk.Availability.SUPPORTED_INSTALLED
         val trackedModeSupported = hasRearCamera && hasAccelerometer &&
             hasGyroscope && arCoreSupported
-        val videoModeSupported = hasRearCamera && nativeStitchingAvailable
+        val videoModeSupported = nativeStitchingAvailable
         val recommendedMode = when {
             trackedModeSupported -> "ar_tracked"
             videoModeSupported -> "video_only"
@@ -242,17 +291,15 @@ class Giro360CapturePlugin :
         val supported = trackedModeSupported || videoModeSupported
         val ready = when (recommendedMode) {
             "ar_tracked" -> permissionGranted && arCoreInstalled && nativeStitchingAvailable
-            "video_only" -> permissionGranted && nativeStitchingAvailable
+            "video_only" -> nativeStitchingAvailable
             else -> false
         }
 
         val reason = when {
-            !hasRearCamera -> "Este aparelho não possui câmera traseira compatível."
             !nativeStitchingAvailable -> "O motor OpenCV não foi carregado neste build."
-            !permissionGranted && recommendedMode == "video_only" ->
-                "Modo vídeo disponível. Autorize a câmera para gravar duas voltas."
             recommendedMode == "video_only" ->
-                "Modo vídeo disponível sem sensores de movimento; o alinhamento será visual."
+                "Importe um vídeo com duas voltas; o alinhamento será calculado visualmente."
+            !hasRearCamera -> "Este aparelho não possui câmera traseira compatível."
             !permissionGranted -> "O aparelho é compatível. Autorize a câmera para começar."
             !arCoreInstalled -> "Instale ou atualize o Google Play Services para RA."
             else -> "Captura completa disponível com ARCore e OpenCV no dispositivo."
@@ -269,6 +316,7 @@ class Giro360CapturePlugin :
                     "rear_camera",
                     "Câmera traseira",
                     hasRearCamera,
+                    required = recommendedMode == "ar_tracked",
                 ),
                 hardwareRequirement(
                     "accelerometer",
@@ -296,13 +344,17 @@ class Giro360CapturePlugin :
                 mapOf(
                     "id" to "camera_permission",
                     "label" to "Permissão da câmera",
-                    "required" to true,
+                    "required" to (recommendedMode == "ar_tracked"),
                     "state" to if (permissionGranted) {
                         "available"
                     } else {
                         "permission_required"
                     },
-                    "message" to if (permissionGranted) "Concedida" else "Será solicitada",
+                    "message" to when {
+                        permissionGranted -> "Concedida"
+                        recommendedMode == "video_only" -> "Não necessária para importar"
+                        else -> "Será solicitada"
+                    },
                 ),
                 mapOf(
                     "id" to "ar_service",
@@ -329,7 +381,7 @@ class Giro360CapturePlugin :
                 ),
                 hardwareRequirement(
                     "video_fallback",
-                    "Fallback somente por vídeo",
+                    "Processamento de vídeo importado",
                     videoModeSupported,
                     if (videoModeSupported) "Disponível" else "Indisponível",
                 ),
@@ -377,13 +429,13 @@ class Giro360CapturePlugin :
     }
 
     private fun activeStatus(): Map<String, Any> =
-        if (activeCaptureMode == "video_only") videoCoordinator.status() else coordinator.status()
+        if (activeCaptureMode == "ar_tracked") coordinator.status() else videoCoordinator.status()
 
     private fun cancelActiveCapture() {
-        if (activeCaptureMode == "video_only") {
-            videoCoordinator.cancelCapture()
-        } else {
+        if (activeCaptureMode == "ar_tracked") {
             coordinator.cancelCapture()
+        } else {
+            videoCoordinator.cancelCapture()
         }
     }
 

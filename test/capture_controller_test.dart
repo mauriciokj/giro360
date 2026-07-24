@@ -63,10 +63,40 @@ void main() {
     await controller.cancel();
     await firstRunExpectation;
   });
+
+  test('imports a video before stitching the selected frames', () async {
+    final directory = await Directory.systemTemp.createTemp('giro360_import_');
+    addTearDown(() => directory.delete(recursive: true));
+    final sourceVideo = File('${directory.path}/source.mp4')
+      ..writeAsBytesSync([1, 2, 3]);
+    final frame = File('${directory.path}/video_000.jpg')
+      ..writeAsBytesSync([1]);
+    final backend = _FakeCaptureBackend();
+    final controller = Giro360CaptureController(
+      captureBackend: backend,
+      stitchBackend: _FakeStitchBackend(),
+    );
+    addTearDown(controller.dispose);
+
+    final importing = controller.events.firstWhere(
+      (event) => event.stage == Giro360CaptureStage.importing,
+    );
+    final future = controller.processVideo(
+      sourceVideo: sourceVideo,
+      sessionDirectory: directory,
+    );
+    await importing;
+    expect(backend.importedVideoPath, sourceVideo.path);
+    backend.emit(_completeStatus(frame.path, directory.path));
+
+    final result = await future;
+    expect(result.panorama.file.existsSync(), isTrue);
+  });
 }
 
 class _FakeCaptureBackend implements Giro360CaptureBackend {
   final _events = StreamController<Giro360CaptureStatus>.broadcast();
+  String? importedVideoPath;
 
   void emit(Giro360CaptureStatus status) => _events.add(status);
 
@@ -91,6 +121,16 @@ class _FakeCaptureBackend implements Giro360CaptureBackend {
 
   @override
   Future<Giro360SupportInfo> prepare() => supportInfo();
+
+  @override
+  Future<void> processVideo({
+    required File sourceVideo,
+    required Directory sessionDirectory,
+    int binCount = 30,
+    int requiredLaps = 2,
+  }) async {
+    importedVideoPath = sourceVideo.path;
+  }
 
   @override
   Future<void> startCapture({

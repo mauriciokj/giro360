@@ -1,3 +1,13 @@
+## 0.1.0-dev.3
+
+- Torna a importação de vídeo o fluxo padrão em Android sem ARCore.
+- Adiciona `Giro360CaptureController.processVideo` sem exigir câmera ou sensores.
+- Seleciona os frames por deslocamento visual ORB em vez de intervalos fixos.
+- Analisa seis amostras por alvo e prioriza a volta com menor erro angular.
+- Preserva a resolução original do vídeo na extração dos 30 frames finais.
+- Normaliza vídeos verticais usando dimensões e metadado de orientação.
+- Mantém a gravação CameraX como alternativa experimental para uso futuro.
+
 ## 0.1.0-dev.2
 
 - Adiciona fallback Android por vídeo para aparelhos sem giroscópio ou ARCore.

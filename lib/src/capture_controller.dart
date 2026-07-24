@@ -8,6 +8,7 @@ import 'stitch_frame_telemetry.dart';
 
 enum Giro360CaptureStage {
   capturing,
+  importing,
   finalizing,
   stitching,
   completed,
@@ -125,6 +126,46 @@ class Giro360CaptureController {
         sessionDirectory: sessionDirectory,
         config: config,
         runCompleter: runCompleter,
+        sourceVideo: null,
+      ),
+    );
+    return runCompleter.future;
+  }
+
+  Future<Giro360CaptureResult> processVideo({
+    required File sourceVideo,
+    required Directory sessionDirectory,
+    Giro360CaptureConfig config = const Giro360CaptureConfig(),
+  }) {
+    if (!sourceVideo.existsSync()) {
+      return Future<Giro360CaptureResult>.error(
+        ArgumentError.value(
+            sourceVideo.path, 'sourceVideo', 'Vídeo não encontrado.'),
+        StackTrace.current,
+      );
+    }
+    if (_disposed) {
+      return Future<Giro360CaptureResult>.error(
+        StateError('O controlador Giro360 já foi descartado.'),
+        StackTrace.current,
+      );
+    }
+    if (isRunning) {
+      return Future<Giro360CaptureResult>.error(
+        StateError('Já existe um processamento Giro360 em andamento.'),
+        StackTrace.current,
+      );
+    }
+
+    final runCompleter = Completer<Giro360CaptureResult>();
+    _runCompleter = runCompleter;
+    _cancelRequested = false;
+    unawaited(
+      _beginCapture(
+        sessionDirectory: sessionDirectory,
+        config: config,
+        runCompleter: runCompleter,
+        sourceVideo: sourceVideo,
       ),
     );
     return runCompleter.future;
@@ -134,6 +175,7 @@ class Giro360CaptureController {
     required Directory sessionDirectory,
     required Giro360CaptureConfig config,
     required Completer<Giro360CaptureResult> runCompleter,
+    required File? sourceVideo,
   }) async {
     try {
       await sessionDirectory.create(recursive: true);
@@ -150,11 +192,20 @@ class Giro360CaptureController {
         _handleStatus,
         onError: _handleBackendError,
       );
-      await _captureBackend.startCapture(
-        sessionDirectory: sessionDirectory,
-        binCount: config.binCount,
-        requiredLaps: config.requiredLaps,
-      );
+      if (sourceVideo == null) {
+        await _captureBackend.startCapture(
+          sessionDirectory: sessionDirectory,
+          binCount: config.binCount,
+          requiredLaps: config.requiredLaps,
+        );
+      } else {
+        await _captureBackend.processVideo(
+          sourceVideo: sourceVideo,
+          sessionDirectory: sessionDirectory,
+          binCount: config.binCount,
+          requiredLaps: config.requiredLaps,
+        );
+      }
       if (_cancelRequested ||
           runCompleter.isCompleted ||
           !identical(_runCompleter, runCompleter)) {
@@ -162,9 +213,13 @@ class Giro360CaptureController {
         return;
       }
       _emit(
-        const Giro360CaptureEvent(
-          stage: Giro360CaptureStage.capturing,
-          message: 'Captura iniciada.',
+        Giro360CaptureEvent(
+          stage: sourceVideo == null
+              ? Giro360CaptureStage.capturing
+              : Giro360CaptureStage.importing,
+          message: sourceVideo == null
+              ? 'Captura iniciada.'
+              : 'Vídeo recebido. Analisando o movimento...',
         ),
       );
     } catch (error, stackTrace) {

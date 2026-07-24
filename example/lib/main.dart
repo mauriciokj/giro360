@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:giro360_capture/giro360_capture.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
 void main() => runApp(const Giro360ExampleApp());
@@ -68,6 +69,10 @@ class _CaptureExampleScreenState extends State<CaptureExampleScreen> {
   Future<void> _prepareAndStart() async {
     var support = _support;
     if (support == null || !support.supported) return;
+    if (support.recommendedMode == Giro360CaptureMode.videoOnly) {
+      await _pickAndProcessVideo();
+      return;
+    }
     if (!support.ready) {
       try {
         support = await _controller.prepare();
@@ -80,6 +85,32 @@ class _CaptureExampleScreenState extends State<CaptureExampleScreen> {
     }
     if (!support.ready) return;
     await _start();
+  }
+
+  Future<void> _pickAndProcessVideo() async {
+    final selected = await ImagePicker().pickVideo(source: ImageSource.gallery);
+    if (selected == null || !mounted) return;
+    setState(() {
+      _starting = true;
+      _panorama = null;
+      _status = null;
+      _error = null;
+    });
+    try {
+      final root = await getApplicationSupportDirectory();
+      final stamp =
+          DateTime.now().toUtc().toIso8601String().replaceAll(':', '-');
+      final result = await _controller.processVideo(
+        sourceVideo: File(selected.path),
+        sessionDirectory: Directory('${root.path}/giro360/$stamp'),
+      );
+      if (mounted) setState(() => _panorama = result.panorama.file);
+    } catch (error) {
+      if (!mounted || error is Giro360CaptureCancelledException) return;
+      setState(() => _error = error.toString());
+    } finally {
+      if (mounted) setState(() => _starting = false);
+    }
   }
 
   Future<void> _start() async {
@@ -129,7 +160,8 @@ class _CaptureExampleScreenState extends State<CaptureExampleScreen> {
             )
           else
             const Giro360CapturePreview(),
-          if (active)
+          if (active &&
+              support?.recommendedMode == Giro360CaptureMode.arTracked)
             const Center(
               child: Icon(Icons.add, color: Colors.white, size: 52),
             ),
@@ -163,9 +195,11 @@ class _CaptureExampleScreenState extends State<CaptureExampleScreen> {
                           ? _prepareAndStart
                           : null,
                       icon: Icon(
-                        support?.ready == true
-                            ? Icons.videocam
-                            : Icons.settings_suggest_outlined,
+                        support?.recommendedMode == Giro360CaptureMode.videoOnly
+                            ? Icons.video_file_outlined
+                            : support?.ready == true
+                                ? Icons.videocam
+                                : Icons.settings_suggest_outlined,
                       ),
                       label: Text(_buttonLabel(support)),
                     ),
@@ -181,6 +215,9 @@ class _CaptureExampleScreenState extends State<CaptureExampleScreen> {
   String _buttonLabel(Giro360SupportInfo? support) {
     if (support == null) return 'Verificando compatibilidade';
     if (!support.supported) return 'Captura indisponível';
+    if (support.recommendedMode == Giro360CaptureMode.videoOnly) {
+      return _panorama == null ? 'Escolher vídeo' : 'Processar outro vídeo';
+    }
     if (!support.ready) return 'Preparar captura';
     return _panorama == null ? 'Gravar duas voltas' : 'Capturar novamente';
   }
@@ -310,9 +347,20 @@ class CaptureProgressPanel extends StatelessWidget {
               '${switch (value.captureSource) {
                 'video' => 'vídeo + AR',
                 'videoOnly' => 'somente vídeo',
+                'importedVideo' => 'vídeo importado',
                 _ => 'frames diretos',
               }}',
             ),
+            if (value.captureSource == 'importedVideo' &&
+                value.visualMotionSampleCount > 0) ...[
+              const SizedBox(height: 4),
+              Text(
+                'ORB ${value.visualMotionMatchedPairCount}/'
+                '${value.visualMotionSampleCount - 1} · '
+                '${value.visualMotionReliable ? 'movimento confiável' : 'medição parcial'}',
+                style: const TextStyle(color: Color(0xffa9bbb7), fontSize: 12),
+              ),
+            ],
           ],
         ],
       ),

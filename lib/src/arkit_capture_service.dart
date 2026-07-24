@@ -20,6 +20,13 @@ abstract interface class Giro360CaptureBackend {
     int requiredLaps,
   });
 
+  Future<void> processVideo({
+    required File sourceVideo,
+    required Directory sessionDirectory,
+    int binCount,
+    int requiredLaps,
+  });
+
   Future<Giro360CaptureStatus> status();
 
   Future<void> cancelCapture();
@@ -80,6 +87,21 @@ class Giro360NativeCaptureService implements Giro360CaptureBackend {
     int requiredLaps = 2,
   }) {
     return _methodChannel.invokeMethod<void>('startCapture', {
+      'directoryPath': sessionDirectory.path,
+      'binCount': binCount,
+      'requiredLaps': requiredLaps,
+    });
+  }
+
+  @override
+  Future<void> processVideo({
+    required File sourceVideo,
+    required Directory sessionDirectory,
+    int binCount = 30,
+    int requiredLaps = 2,
+  }) {
+    return _methodChannel.invokeMethod<void>('processVideo', {
+      'sourceVideoPath': sourceVideo.path,
       'directoryPath': sessionDirectory.path,
       'binCount': binCount,
       'requiredLaps': requiredLaps,
@@ -155,6 +177,12 @@ class Giro360CaptureStatus {
     required this.videoPath,
     required this.videoTimelinePath,
     required this.captureSource,
+    required this.visualMotionReliable,
+    required this.visualMotionSampleCount,
+    required this.visualMotionMatchedPairCount,
+    required this.visualCumulativeMotion,
+    required this.visualDirectionConsistency,
+    required this.appliedFrameRotationDegrees,
     required this.rejectedTrackingFrameCount,
     required this.rejectedTranslationFrameCount,
     required this.frames,
@@ -191,6 +219,21 @@ class Giro360CaptureStatus {
       videoPath: _string(map, 'videoPath'),
       videoTimelinePath: _string(map, 'videoTimelinePath'),
       captureSource: _string(map, 'captureSource', fallback: 'video'),
+      visualMotionReliable: _bool(map, 'visualMotionReliable'),
+      visualMotionSampleCount: _int(map, 'visualMotionSampleCount'),
+      visualMotionMatchedPairCount: _int(
+        map,
+        'visualMotionMatchedPairCount',
+      ),
+      visualCumulativeMotion: _double(map, 'visualCumulativeMotion'),
+      visualDirectionConsistency: _double(
+        map,
+        'visualDirectionConsistency',
+      ),
+      appliedFrameRotationDegrees: _double(
+        map,
+        'appliedFrameRotationDegrees',
+      ),
       rejectedTrackingFrameCount: _int(map, 'rejectedTrackingFrameCount'),
       rejectedTranslationFrameCount: _int(map, 'rejectedTranslationFrameCount'),
       frames: _objectList(map['frames'])
@@ -229,6 +272,12 @@ class Giro360CaptureStatus {
   final String videoPath;
   final String videoTimelinePath;
   final String captureSource;
+  final bool visualMotionReliable;
+  final int visualMotionSampleCount;
+  final int visualMotionMatchedPairCount;
+  final double visualCumulativeMotion;
+  final double visualDirectionConsistency;
+  final double appliedFrameRotationDegrees;
   final int rejectedTrackingFrameCount;
   final int rejectedTranslationFrameCount;
   final List<Giro360VideoFrame> frames;
