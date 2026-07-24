@@ -1,6 +1,6 @@
 name: giro360_capture
-description: Reusable ARKit video capture and OpenCV cylindrical panorama engine.
-version: 0.0.1
+description: Reusable ARKit/ARCore capture and OpenCV cylindrical panorama engine.
+version: 0.1.0-dev.1
 homepage: https://github.com/mauriciokj/giro360
 repository: https://github.com/mauriciokj/giro360
 publish_to: "none"
@@ -22,5 +22,8 @@ dev_dependencies:
 flutter:
   plugin:
     platforms:
+      android:
+        package: com.giro360.giro360_capture
+        pluginClass: Giro360CapturePlugin
       ios:
         pluginClass: Giro360CapturePlugin

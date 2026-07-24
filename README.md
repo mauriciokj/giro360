@@ -1,63 +1,99 @@
 # giro360_capture
 
-Plugin Flutter reutilizavel para capturar um panorama cilindrico no iPhone.
-Ele grava duas voltas com ARKit, escolhe 30 keyframes de uma unica volta
-coerente e executa a costura OpenCV no proprio aparelho.
-
-## O que o pacote encapsula
-
-- preview de camera ARKit com rastreamento 6-DoF;
-- gravacao H.264 das duas voltas;
-- progresso, direcao, inclinacao e deslocamento por eventos tipados;
-- selecao de keyframes por faixa angular, nitidez e estabilidade;
-- extracao dos frames selecionados a partir do MP4;
-- costura cilindrica OpenCV pelo modo validado `videoRefine`;
-- bloqueio de repouso da tela somente durante captura e finalizacao;
-- injecao de backends para teste ou para futuras implementacoes nativas.
+Plugin Flutter reutilizável para capturar panoramas cilíndricos no iOS e no
+Android. O SDK acompanha duas voltas, seleciona 30 keyframes de uma única volta
+coerente e executa a costura OpenCV no próprio aparelho.
 
 ## Suporte atual
 
-| Plataforma | Captura | Costura empacotada |
+| Plataforma | Rastreamento | Captura dos frames | Costura |
+| --- | --- | --- | --- |
+| iOS 13+ | ARKit 6-DoF | Vídeo H.264 | OpenCV embarcado |
+| Android 7+ (API 24) | ARCore 6-DoF | Keyframes diretos | OpenCV 4.14 embarcado |
+
+O Android usa ARCore como recurso opcional. Assim, o aplicativo abre também em
+aparelhos incompatíveis e consegue explicar por que a captura não funcionará.
+
+## Sensores e requisitos
+
+| Requisito | Obrigatório | Uso |
 | --- | --- | --- |
-| iOS 13+ com ARKit | Sim | Sim |
-| Android | Nao | Nao |
+| Câmera traseira | Sim | Imagens e rastreamento visual |
+| Acelerômetro | Sim | Gravidade, estabilidade e fusão inercial |
+| Giroscópio | Sim | Rotação precisa entre os keyframes |
+| ARKit ou ARCore certificado | Sim | Pose 6-DoF e translação da lente |
+| Google Play Services para RA | Android | Runtime e perfil do aparelho ARCore |
+| Magnetômetro/bússola | Não | O progresso usa orientação relativa da sessão AR |
+| Sensor de profundidade/ToF | Não | Não é usado no panorama cilíndrico atual |
+| GPS | Não | A captura é inteiramente local |
 
-Em plataformas sem implementacao, `isSupported()` retorna `false`. A API Dart
-continua compilavel, o que permite compartilhar o mesmo app Flutter.
+No Android, ter acelerômetro e giroscópio não basta: o modelo também precisa ser
+certificado pelo ARCore, que valida câmera, sensores, arquitetura e desempenho.
 
-## Instalar a partir deste repositorio
+## Diagnóstico ao abrir
+
+```dart
+final controller = Giro360CaptureController();
+var support = await controller.supportInfo();
+
+print(support.supported); // o hardware pode executar a captura
+print(support.ready);     // permissão e serviço AR estão prontos
+print(support.reason);    // motivo legível para o usuário
+
+for (final requirement in support.requirements) {
+  print('${requirement.label}: ${requirement.message}');
+}
+
+if (support.canPrepare) {
+  support = await controller.prepare();
+}
+```
+
+`prepare()` solicita a câmera e, no Android, abre a instalação ou atualização do
+Google Play Services para RA quando necessário. Só habilite a captura quando
+`support.ready` for `true`.
+
+## Instalação
 
 ```yaml
 dependencies:
   giro360_capture:
     git:
       url: git@github.com:mauriciokj/giro360.git
-      ref: v0.0.1
+      ref: codex/android-support
   path_provider: ^2.1.5
 ```
 
-Para um repositorio publico, a URL HTTPS tambem funciona:
+Também é possível usar `https://github.com/mauriciokj/giro360.git` em
+repositórios públicos.
 
-```yaml
-url: https://github.com/mauriciokj/giro360.git
-```
+Esta é a referência de teste Android `0.1.0-dev.1`. A tag `v0.1.0` será criada
+depois da validação das duas voltas em um aparelho Android compatível.
 
-O app iOS hospedeiro precisa informar o uso da camera:
+### iOS
+
+Declare o uso da câmera em `ios/Runner/Info.plist`:
 
 ```xml
 <key>NSCameraUsageDescription</key>
-<string>A camera e usada para capturar o panorama.</string>
+<string>A câmera é usada para capturar o panorama.</string>
 ```
 
-O plugin e registrado automaticamente pelo Flutter. Nao adicione classes Swift,
-fontes C++ nem `OpenCV2` manualmente ao projeto do Runner. O `podspec` do pacote
-declara o OpenCV e usa framework estatico para funcionar inclusive em hosts com
-`use_frameworks!`.
+O plugin requer iOS 13 ou superior. O `podspec` já inclui ARKit, OpenCV e o
+stitcher C++; não copie código nativo para o Runner.
 
-## Uso completo
+### Android
+
+O host precisa usar `minSdk` 24 ou superior. Permissão de câmera, recursos de
+sensores e metadado ARCore opcional são mesclados automaticamente pelo plugin.
+O pacote usa ARCore `1.54.0`, OpenCV `4.14.0`, CMake e NDK.
+
+## Captura
 
 ```dart
 final controller = Giro360CaptureController();
+final root = await getApplicationSupportDirectory();
+final session = Directory('${root.path}/giro360/minha-sessao');
 
 final events = controller.events.listen((event) {
   final status = event.status;
@@ -65,9 +101,6 @@ final events = controller.events.listen((event) {
     print('${status.progressDegrees.toStringAsFixed(0)} graus');
   }
 });
-
-final root = await getApplicationSupportDirectory();
-final session = Directory('${root.path}/giro360/minha-sessao');
 
 final result = await controller.start(
   sessionDirectory: session,
@@ -79,13 +112,13 @@ final result = await controller.start(
 );
 
 print(result.panorama.file.path);
-print(result.videoFile.path);
+print(result.recordedVideoFile?.path); // preenchido somente no iOS
 
 await events.cancel();
 await controller.dispose();
 ```
 
-Para mostrar a imagem da camera, use a view opcional em uma tela Flutter:
+O preview nativo é o mesmo nas duas plataformas:
 
 ```dart
 const Stack(
@@ -97,44 +130,26 @@ const Stack(
 )
 ```
 
-## Eventos
-
-`Giro360CaptureController.events` publica os estagios:
-
-- `capturing`: ARKit esta gravando e medindo as duas voltas;
-- `finalizing`: MP4 e timeline estao sendo fechados e os frames extraidos;
-- `stitching`: OpenCV esta gerando o panorama;
-- `completed`: o evento contem `Giro360CaptureResult`;
-- `cancelled` e `failed`: a captura terminou sem panorama.
-
-O `Giro360CaptureStatus` inclui progresso, tracking ARKit, sentido do giro,
-deslocamento da lente, pitch, roll, quantidade de frames e caminhos dos
-artefatos nativos.
-
 ## Arquivos gerados
 
-Dentro do diretorio informado pelo host:
+Ambas as plataformas geram:
 
 ```text
-giro360_capture.mp4
-giro360_video_timeline.json
 video_000.jpg ... video_029.jpg
 giro360_panorama.jpg
 ```
 
-O nome do panorama pode ser alterado em `Giro360CaptureConfig.outputFileName`.
+O iOS também mantém `giro360_capture.mp4` e
+`giro360_video_timeline.json`. O Android salva
+`giro360_android_timeline.json` e informa `captureSource: directFrames`.
 
-## Exemplo independente
-
-O diretorio `example/` e um aplicativo minimo que nao depende do Giro360:
+## Exemplo e validação
 
 ```bash
 cd example
 flutter pub get
-flutter run --release -d <device-id>
+flutter run -d <device-id>
 ```
-
-## Desenvolvimento
 
 ```bash
 flutter analyze
@@ -143,8 +158,11 @@ flutter test
 cd example
 flutter analyze
 flutter test
+flutter build apk --debug --target-platform android-arm64
 flutter build ios --release --no-codesign
 ```
 
-O motor C++ e grande por concentrar os experimentos de alinhamento. A API
-publica usa `videoRefine`, a alternativa visualmente validada no iPhone 16e.
+O build Android, o carregamento do OpenCV e o diagnóstico foram validados em um
+Samsung SM-A127M. Nesse aparelho o SDK identificou corretamente a ausência de
+giroscópio e a incompatibilidade com ARCore. A captura Android completa ainda
+precisa ser validada em hardware certificado com giroscópio.

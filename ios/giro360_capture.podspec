@@ -1,7 +1,7 @@
 Pod::Spec.new do |s|
   s.name             = 'giro360_capture'
-  s.version          = '0.0.1'
-  s.summary          = 'ARKit video capture and OpenCV panorama engine.'
+  s.version          = '0.1.0-dev.1'
+  s.summary          = 'ARKit capture and OpenCV panorama engine.'
   s.description      = <<-DESC
 Records ARKit camera video, selects coherent keyframes, and stitches a
 cylindrical panorama locally with OpenCV.

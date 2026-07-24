@@ -3,10 +3,16 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
+import 'capture_support.dart';
+
 abstract interface class Giro360CaptureBackend {
   Stream<Giro360CaptureStatus> get events;
 
   Future<bool> isSupported();
+
+  Future<Giro360SupportInfo> supportInfo();
+
+  Future<Giro360SupportInfo> prepare();
 
   Future<void> startCapture({
     required Directory sessionDirectory,
@@ -36,10 +42,35 @@ class Giro360NativeCaptureService implements Giro360CaptureBackend {
 
   @override
   Future<bool> isSupported() async {
-    if (!Platform.isIOS) {
-      return false;
+    return (await supportInfo()).supported;
+  }
+
+  @override
+  Future<Giro360SupportInfo> supportInfo() async {
+    if (!Platform.isIOS && !Platform.isAndroid) {
+      return Giro360SupportInfo.unsupportedPlatform(
+        Platform.operatingSystem,
+      );
     }
-    return await _methodChannel.invokeMethod<bool>('isSupported') ?? false;
+    final value = await _methodChannel.invokeMethod<Object?>('supportInfo');
+    if (value is! Map<Object?, Object?>) {
+      throw const FormatException('Diagnóstico de compatibilidade inválido.');
+    }
+    return Giro360SupportInfo.fromMap(value);
+  }
+
+  @override
+  Future<Giro360SupportInfo> prepare() async {
+    if (!Platform.isIOS && !Platform.isAndroid) {
+      return Giro360SupportInfo.unsupportedPlatform(
+        Platform.operatingSystem,
+      );
+    }
+    final value = await _methodChannel.invokeMethod<Object?>('prepare');
+    if (value is! Map<Object?, Object?>) {
+      throw const FormatException('Resultado de preparação inválido.');
+    }
+    return Giro360SupportInfo.fromMap(value);
   }
 
   @override
@@ -75,14 +106,21 @@ class Giro360CapturePreview extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (!Platform.isIOS) {
-      return const ColoredBox(color: Color(0xff000000));
+    if (Platform.isIOS) {
+      return const UiKitView(
+        viewType: 'giro360_capture/preview',
+        layoutDirection: TextDirection.ltr,
+        creationParamsCodec: StandardMessageCodec(),
+      );
     }
-    return const UiKitView(
-      viewType: 'giro360_capture/preview',
-      layoutDirection: TextDirection.ltr,
-      creationParamsCodec: StandardMessageCodec(),
-    );
+    if (Platform.isAndroid) {
+      return const AndroidView(
+        viewType: 'giro360_capture/preview',
+        layoutDirection: TextDirection.ltr,
+        creationParamsCodec: StandardMessageCodec(),
+      );
+    }
+    return const ColoredBox(color: Color(0xff000000));
   }
 }
 
@@ -116,6 +154,7 @@ class Giro360CaptureStatus {
     required this.droppedVideoFrameCount,
     required this.videoPath,
     required this.videoTimelinePath,
+    required this.captureSource,
     required this.rejectedTrackingFrameCount,
     required this.rejectedTranslationFrameCount,
     required this.frames,
@@ -151,6 +190,7 @@ class Giro360CaptureStatus {
       droppedVideoFrameCount: _int(map, 'droppedVideoFrameCount'),
       videoPath: _string(map, 'videoPath'),
       videoTimelinePath: _string(map, 'videoTimelinePath'),
+      captureSource: _string(map, 'captureSource', fallback: 'video'),
       rejectedTrackingFrameCount: _int(map, 'rejectedTrackingFrameCount'),
       rejectedTranslationFrameCount: _int(map, 'rejectedTranslationFrameCount'),
       frames: _objectList(map['frames'])
@@ -188,6 +228,7 @@ class Giro360CaptureStatus {
   final int droppedVideoFrameCount;
   final String videoPath;
   final String videoTimelinePath;
+  final String captureSource;
   final int rejectedTrackingFrameCount;
   final int rejectedTranslationFrameCount;
   final List<Giro360VideoFrame> frames;
@@ -275,8 +316,12 @@ double _double(Map<Object?, Object?> map, String key) =>
 int _int(Map<Object?, Object?> map, String key) =>
     (map[key] as num?)?.toInt() ?? 0;
 
-String _string(Map<Object?, Object?> map, String key) =>
-    map[key]?.toString() ?? '';
+String _string(
+  Map<Object?, Object?> map,
+  String key, {
+  String fallback = '',
+}) =>
+    map[key]?.toString() ?? fallback;
 
 List<double> _doubleList(Object? value) => _objectList(value)
     .whereType<num>()

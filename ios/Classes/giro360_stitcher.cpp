@@ -3467,7 +3467,7 @@ cv::Mat force_equirectangular_ratio(const cv::Mat& panorama) {
 
 }  // namespace
 
-#if defined(__APPLE__)
+#if defined(__APPLE__) || defined(__ANDROID__)
 #define GIRO360_EXPORT extern "C" __attribute__((visibility("default"))) __attribute__((used))
 #else
 #define GIRO360_EXPORT extern "C"
@@ -3495,7 +3495,15 @@ int run_stitch(
 
     std::string orb_warning;
     const bool passed_orb_check = quick_orb_overlap_check(images, &orb_warning);
-    if (!passed_orb_check || image_count > kMaxImagesForFeatureStitching) {
+    const bool force_guided_stitching =
+#if defined(__ANDROID__)
+        true;
+#else
+        false;
+#endif
+    if (force_guided_stitching ||
+        !passed_orb_check ||
+        image_count > kMaxImagesForFeatureStitching) {
       GuidedRefinementMetrics refinement_metrics;
       cv::Mat guided_fallback =
           build_guided_cylindrical_fallback(
@@ -3520,6 +3528,7 @@ int run_stitch(
       return kGuidedFallbackCode;
     }
 
+#if !defined(__ANDROID__)
     cv::Ptr<cv::Stitcher> stitcher = cv::Stitcher::create(cv::Stitcher::PANORAMA);
     stitcher->setFeaturesFinder(cv::ORB::create(5000));
     stitcher->setPanoConfidenceThresh(0.25);
@@ -3567,6 +3576,10 @@ int run_stitch(
     }
 
     return 0;
+#else
+    write_error(error_buffer, error_buffer_length, "O modo guiado Android não foi executado.");
+    return 11;
+#endif
   } catch (const std::exception& error) {
     write_error(error_buffer, error_buffer_length, error.what());
     return 10;

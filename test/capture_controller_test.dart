@@ -80,6 +80,18 @@ class _FakeCaptureBackend implements Giro360CaptureBackend {
   Future<bool> isSupported() async => true;
 
   @override
+  Future<Giro360SupportInfo> supportInfo() async => const Giro360SupportInfo(
+        platform: 'test',
+        supported: true,
+        ready: true,
+        reason: 'ok',
+        requirements: <Giro360RequirementStatus>[],
+      );
+
+  @override
+  Future<Giro360SupportInfo> prepare() => supportInfo();
+
+  @override
   Future<void> startCapture({
     required Directory sessionDirectory,
     int binCount = 30,

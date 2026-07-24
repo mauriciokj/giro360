@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'arkit_capture_service.dart';
+import 'capture_support.dart';
 import 'panorama_stitcher.dart';
 import 'stitch_frame_telemetry.dart';
 
@@ -51,7 +52,7 @@ class Giro360CaptureResult {
   const Giro360CaptureResult({
     required this.captureStatus,
     required this.panorama,
-    required this.videoFile,
+    required this.recordedVideoFile,
     required this.timelineFile,
     required this.selectedFrames,
     required this.stitchElapsed,
@@ -59,7 +60,12 @@ class Giro360CaptureResult {
 
   final Giro360CaptureStatus captureStatus;
   final PanoramaStitchResult panorama;
-  final File videoFile;
+  final File? recordedVideoFile;
+
+  @Deprecated('Use recordedVideoFile; Android captura keyframes diretamente.')
+  File get videoFile =>
+      recordedVideoFile ??
+      (throw StateError('Esta captura não gerou um arquivo de vídeo.'));
   final File timelineFile;
   final List<Giro360VideoFrame> selectedFrames;
   final Duration stitchElapsed;
@@ -89,6 +95,10 @@ class Giro360CaptureController {
   bool get isRunning => _runCompleter != null && !_runCompleter!.isCompleted;
 
   Future<bool> isSupported() => _captureBackend.isSupported();
+
+  Future<Giro360SupportInfo> supportInfo() => _captureBackend.supportInfo();
+
+  Future<Giro360SupportInfo> prepare() => _captureBackend.prepare();
 
   Future<Giro360CaptureResult> start({
     required Directory sessionDirectory,
@@ -280,7 +290,8 @@ class Giro360CaptureController {
       final result = Giro360CaptureResult(
         captureStatus: status,
         panorama: panorama,
-        videoFile: File(status.videoPath),
+        recordedVideoFile:
+            status.videoPath.isEmpty ? null : File(status.videoPath),
         timelineFile: File(status.videoTimelinePath),
         selectedFrames: selectedFrames,
         stitchElapsed: stopwatch.elapsed,

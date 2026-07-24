@@ -1,6 +1,6 @@
 PODS:
   - Flutter (1.0.0)
-  - giro360_capture (0.0.1):
+  - giro360_capture (0.1.0-dev.1):
     - Flutter
     - OpenCV2 (~> 4.3.0)
   - integration_test (0.0.1):
@@ -26,7 +26,7 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
-  giro360_capture: 9416b659bcc9ea0ef7145ec04f2894bcc7cb4a34
+  giro360_capture: 20654d2a81f504f206381b2c486634cbeecbc039
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
   OpenCV2: ffe82e5cb5d16dc3fc01a5f4127b9a5b3cfc7d1b
 

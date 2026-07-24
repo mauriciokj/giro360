@@ -5,7 +5,7 @@ void main() {
   testWidgets('shows the reusable capture experience', (tester) async {
     await tester.pumpWidget(const Giro360ExampleApp());
 
-    expect(find.text('Giro360 Capture'), findsOneWidget);
-    expect(find.text('Gravar duas voltas'), findsOneWidget);
+    expect(find.text('Verificando este aparelho'), findsOneWidget);
+    expect(find.text('Verificando compatibilidade'), findsOneWidget);
   });
 }

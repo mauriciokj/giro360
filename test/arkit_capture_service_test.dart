@@ -16,6 +16,36 @@ void main() {
     expect(GuidedAlignmentMode.videoRefine.nativeValue, 4);
     expect(GuidedAlignmentMode.videoRefine.label, 'ORB vídeo coerente');
   });
+
+  test('parses a detailed Android compatibility report', () {
+    final info = Giro360SupportInfo.fromMap({
+      'platform': 'android',
+      'supported': true,
+      'ready': false,
+      'reason': 'Autorize a câmera.',
+      'requirements': <Object?>[
+        <Object?, Object?>{
+          'id': 'gyroscope',
+          'label': 'Giroscópio',
+          'required': true,
+          'state': 'available',
+          'message': 'Disponível',
+        },
+        <Object?, Object?>{
+          'id': 'camera_permission',
+          'label': 'Permissão da câmera',
+          'required': true,
+          'state': 'permission_required',
+          'message': 'Será solicitada',
+        },
+      ],
+    });
+
+    expect(info.supported, isTrue);
+    expect(info.ready, isFalse);
+    expect(info.canPrepare, isTrue);
+    expect(info.blockingRequirements.single.id, 'camera_permission');
+  });
 }
 
 Map<Object?, Object?> _statusMap({required bool complete}) => {
@@ -34,6 +64,7 @@ Map<Object?, Object?> _statusMap({required bool complete}) => {
       'lapCandidateCounts': <Object?>[30, 30],
       'videoPath': '/tmp/giro360_capture.mp4',
       'videoTimelinePath': '/tmp/giro360_video_timeline.json',
+      'captureSource': 'video',
       'frames': <Object?>[
         <Object?, Object?>{
           'binIndex': 0,

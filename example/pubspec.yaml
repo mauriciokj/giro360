@@ -1,7 +1,7 @@
 name: giro360_capture_example
 description: Aplicativo mínimo de exemplo para o giro360_capture.
 publish_to: "none"
-version: 0.0.1+1
+version: 0.1.0-dev.1+1
 
 environment:
   sdk: ">=3.3.0 <4.0.0"

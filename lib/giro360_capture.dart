@@ -8,5 +8,6 @@ export 'src/arkit_capture_service.dart'
         Giro360NativeCaptureService,
         Giro360VideoFrame;
 export 'src/capture_controller.dart';
+export 'src/capture_support.dart';
 export 'src/panorama_stitcher.dart';
 export 'src/stitch_frame_telemetry.dart';

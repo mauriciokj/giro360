@@ -1,5 +1,6 @@
 import ARKit
 import AVFoundation
+import CoreMotion
 import Flutter
 import SceneKit
 import UIKit
@@ -42,7 +43,11 @@ public final class Giro360CapturePlugin: NSObject, FlutterPlugin, FlutterStreamH
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "isSupported":
-      result(ARWorldTrackingConfiguration.isSupported)
+      result(currentSupportInfo()["supported"] as? Bool ?? false)
+    case "supportInfo":
+      result(currentSupportInfo())
+    case "prepare":
+      prepareCapture(result: result)
     case "startCapture":
       guard let arguments = call.arguments as? [String: Any],
             let directoryPath = arguments["directoryPath"] as? String else {
@@ -103,6 +108,125 @@ public final class Giro360CapturePlugin: NSObject, FlutterPlugin, FlutterStreamH
       updateIdleTimer(status: status)
       eventSink?(status)
     }
+  }
+
+  private func prepareCapture(result: @escaping FlutterResult) {
+    switch AVCaptureDevice.authorizationStatus(for: .video) {
+    case .notDetermined:
+      AVCaptureDevice.requestAccess(for: .video) { [weak self] _ in
+        DispatchQueue.main.async {
+          guard let self else { return }
+          result(self.currentSupportInfo())
+        }
+      }
+    default:
+      result(currentSupportInfo())
+    }
+  }
+
+  private func currentSupportInfo() -> [String: Any] {
+    let motion = CMMotionManager()
+    let hasCamera = AVCaptureDevice.default(
+      .builtInWideAngleCamera,
+      for: .video,
+      position: .back
+    ) != nil
+    let hasAccelerometer = motion.isAccelerometerAvailable
+    let hasGyroscope = motion.isGyroAvailable
+    let hasWorldTracking = ARWorldTrackingConfiguration.isSupported
+    let permission = AVCaptureDevice.authorizationStatus(for: .video)
+    let permissionGranted = permission == .authorized
+    let hardwareSupported = hasCamera
+      && hasAccelerometer
+      && hasGyroscope
+      && hasWorldTracking
+    let ready = hardwareSupported && permissionGranted
+
+    let reason: String
+    if !hasCamera {
+      reason = "Este aparelho não possui câmera traseira compatível."
+    } else if !hasAccelerometer {
+      reason = "O acelerômetro necessário não está disponível."
+    } else if !hasGyroscope {
+      reason = "O giroscópio necessário não está disponível."
+    } else if !hasWorldTracking {
+      reason = "O ARKit 6-DoF não é suportado neste aparelho."
+    } else if permission == .denied || permission == .restricted {
+      reason = "Permita o acesso à câmera nos Ajustes para capturar."
+    } else if !permissionGranted {
+      reason = "O aparelho é compatível. Autorize a câmera para começar."
+    } else {
+      reason = "Captura disponível com ARKit e OpenCV no dispositivo."
+    }
+
+    return [
+      "platform": "ios",
+      "supported": hardwareSupported,
+      "ready": ready,
+      "reason": reason,
+      "requirements": [
+        requirement(
+          id: "rear_camera",
+          label: "Câmera traseira",
+          available: hasCamera,
+          message: hasCamera ? "Disponível" : "Não encontrada"
+        ),
+        requirement(
+          id: "accelerometer",
+          label: "Acelerômetro",
+          available: hasAccelerometer,
+          message: hasAccelerometer ? "Disponível" : "Não encontrado"
+        ),
+        requirement(
+          id: "gyroscope",
+          label: "Giroscópio",
+          available: hasGyroscope,
+          message: hasGyroscope ? "Disponível" : "Não encontrado"
+        ),
+        requirement(
+          id: "motion_tracking",
+          label: "Rastreamento ARKit 6-DoF",
+          available: hasWorldTracking,
+          message: hasWorldTracking ? "Compatível" : "Não compatível"
+        ),
+        [
+          "id": "camera_permission",
+          "label": "Permissão da câmera",
+          "required": true,
+          "state": permissionGranted
+            ? "available"
+            : (permission == .notDetermined
+                ? "permission_required"
+                : "missing"),
+          "message": permissionGranted
+            ? "Concedida"
+            : (permission == .notDetermined
+                ? "Será solicitada"
+                : "Negada nos Ajustes"),
+        ],
+        requirement(
+          id: "native_stitching",
+          label: "Motor OpenCV",
+          available: true,
+          message: "Embarcado no plugin"
+        ),
+      ],
+    ]
+  }
+
+  private func requirement(
+    id: String,
+    label: String,
+    available: Bool,
+    message: String
+  ) -> [String: Any] {
+    [
+      "id": id,
+      "label": label,
+      "required": true,
+      "state": available ? "available" : "missing",
+      "message": message,
+    ]
   }
 
   private func updateIdleTimer(status: [String: Any]) {
@@ -406,6 +530,7 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       "droppedVideoFrameCount": droppedVideoFrameCount,
       "videoPath": videoPath,
       "videoTimelinePath": videoTimelinePath,
+      "captureSource": "video",
       "rejectedTrackingFrameCount": rejectedTrackingFrameCount,
       "rejectedTranslationFrameCount": rejectedTranslationFrameCount,
       "frames": selectedFrames,
