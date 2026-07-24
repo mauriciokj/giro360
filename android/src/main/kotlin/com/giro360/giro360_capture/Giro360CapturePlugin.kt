@@ -28,11 +28,13 @@ class Giro360CapturePlugin :
     private lateinit var methodChannel: MethodChannel
     private lateinit var eventChannel: EventChannel
     private lateinit var coordinator: Giro360CaptureCoordinator
+    private lateinit var videoCoordinator: Giro360VideoFallbackCoordinator
     private var activity: Activity? = null
     private var activityBinding: ActivityPluginBinding? = null
     private var eventSink: EventChannel.EventSink? = null
     private var pendingPrepareResult: MethodChannel.Result? = null
     private var nativeStitchingAvailable = false
+    private var activeCaptureMode = "ar_tracked"
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         applicationContext = binding.applicationContext
@@ -47,13 +49,16 @@ class Giro360CapturePlugin :
         coordinator = Giro360CaptureCoordinator(applicationContext) { status ->
             eventSink?.success(status)
         }
+        videoCoordinator = Giro360VideoFallbackCoordinator(applicationContext) { status ->
+            eventSink?.success(status)
+        }
         methodChannel = MethodChannel(binding.binaryMessenger, METHOD_CHANNEL)
         eventChannel = EventChannel(binding.binaryMessenger, EVENT_CHANNEL)
         methodChannel.setMethodCallHandler(this)
         eventChannel.setStreamHandler(this)
         binding.platformViewRegistry.registerViewFactory(
             VIEW_TYPE,
-            Giro360PreviewFactory(coordinator),
+            Giro360PreviewFactory(coordinator, videoCoordinator),
         )
     }
 
@@ -66,9 +71,9 @@ class Giro360CapturePlugin :
             "supportInfo" -> supportInfo(result::success)
             "prepare" -> prepare(result)
             "startCapture" -> startCapture(call, result)
-            "status" -> result.success(coordinator.status())
+            "status" -> result.success(activeStatus())
             "cancelCapture" -> {
-                coordinator.cancelCapture()
+                cancelActiveCapture()
                 result.success(null)
             }
 
@@ -78,7 +83,7 @@ class Giro360CapturePlugin :
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
         eventSink = events
-        events.success(coordinator.status())
+        events.success(activeStatus())
     }
 
     override fun onCancel(arguments: Any?) {
@@ -113,7 +118,19 @@ class Giro360CapturePlugin :
             return
         }
 
-        requestArCoreInstall(currentActivity, result)
+        prepareAvailableMode(currentActivity, result)
+    }
+
+    private fun prepareAvailableMode(
+        currentActivity: Activity,
+        result: MethodChannel.Result,
+    ) {
+        val availability = ArCoreApk.getInstance().checkAvailability(applicationContext)
+        if (hasMotionHardware() && availability.isSupported) {
+            requestArCoreInstall(currentActivity, result)
+        } else {
+            supportInfo(result::success)
+        }
     }
 
     private fun requestArCoreInstall(
@@ -152,14 +169,6 @@ class Giro360CapturePlugin :
             return
         }
         val availability = ArCoreApk.getInstance().checkAvailability(applicationContext)
-        if (availability != ArCoreApk.Availability.SUPPORTED_INSTALLED) {
-            result.error(
-                "arcore_not_ready",
-                "O Google Play Services para RA precisa ser instalado ou atualizado.",
-                availability.name,
-            )
-            return
-        }
         if (!nativeStitchingAvailable) {
             result.error(
                 "opencv_not_ready",
@@ -170,17 +179,35 @@ class Giro360CapturePlugin :
         }
 
         try {
-            coordinator.startCapture(
-                activity = currentActivity,
-                directoryPath = directoryPath,
-                binCount = (call.argument<Int>("binCount") ?: 30).coerceIn(24, 90),
-                requiredLaps = (call.argument<Int>("requiredLaps") ?: 2).coerceIn(1, 3),
-            )
+            val binCount = (call.argument<Int>("binCount") ?: 30).coerceIn(24, 90)
+            val requiredLaps = (call.argument<Int>("requiredLaps") ?: 2).coerceIn(1, 3)
+            val useTrackedMode = hasMotionHardware() &&
+                availability == ArCoreApk.Availability.SUPPORTED_INSTALLED
+            if (useTrackedMode) {
+                activeCaptureMode = "ar_tracked"
+                videoCoordinator.pause()
+                videoCoordinator.hidePreview()
+                coordinator.startCapture(
+                    activity = currentActivity,
+                    directoryPath = directoryPath,
+                    binCount = binCount,
+                    requiredLaps = requiredLaps,
+                )
+            } else {
+                activeCaptureMode = "video_only"
+                coordinator.pause()
+                videoCoordinator.startCapture(
+                    activity = currentActivity,
+                    directoryPath = directoryPath,
+                    binCount = binCount,
+                    requiredLaps = requiredLaps,
+                )
+            }
             result.success(null)
         } catch (error: Throwable) {
             result.error(
-                "arcore_start_failed",
-                "Não foi possível iniciar o ARCore: ${error.localizedMessage}",
+                "capture_start_failed",
+                "Não foi possível iniciar a captura: ${error.localizedMessage}",
                 null,
             )
         }
@@ -204,26 +231,38 @@ class Giro360CapturePlugin :
         val permissionGranted = hasCameraPermission()
         val arCoreSupported = availability.isSupported
         val arCoreInstalled = availability == ArCoreApk.Availability.SUPPORTED_INSTALLED
-        val hardwareSupported = hasRearCamera && hasAccelerometer && hasGyroscope && arCoreSupported
-        val ready = hardwareSupported && permissionGranted && arCoreInstalled &&
-            nativeStitchingAvailable
+        val trackedModeSupported = hasRearCamera && hasAccelerometer &&
+            hasGyroscope && arCoreSupported
+        val videoModeSupported = hasRearCamera && nativeStitchingAvailable
+        val recommendedMode = when {
+            trackedModeSupported -> "ar_tracked"
+            videoModeSupported -> "video_only"
+            else -> "unavailable"
+        }
+        val supported = trackedModeSupported || videoModeSupported
+        val ready = when (recommendedMode) {
+            "ar_tracked" -> permissionGranted && arCoreInstalled && nativeStitchingAvailable
+            "video_only" -> permissionGranted && nativeStitchingAvailable
+            else -> false
+        }
 
         val reason = when {
             !hasRearCamera -> "Este aparelho não possui câmera traseira compatível."
-            !hasAccelerometer -> "O acelerômetro necessário não está disponível."
-            !hasGyroscope -> "O giroscópio necessário não está disponível."
-            availability.isUnsupported -> "Este modelo não é certificado para ARCore."
-            availability.isUnknown -> "Ainda não foi possível confirmar o suporte ao ARCore."
+            !nativeStitchingAvailable -> "O motor OpenCV não foi carregado neste build."
+            !permissionGranted && recommendedMode == "video_only" ->
+                "Modo vídeo disponível. Autorize a câmera para gravar duas voltas."
+            recommendedMode == "video_only" ->
+                "Modo vídeo disponível sem sensores de movimento; o alinhamento será visual."
             !permissionGranted -> "O aparelho é compatível. Autorize a câmera para começar."
             !arCoreInstalled -> "Instale ou atualize o Google Play Services para RA."
-            !nativeStitchingAvailable -> "O motor OpenCV não foi carregado neste build."
-            else -> "Captura disponível com ARCore e OpenCV no dispositivo."
+            else -> "Captura completa disponível com ARCore e OpenCV no dispositivo."
         }
 
         return mapOf(
             "platform" to "android",
-            "supported" to hardwareSupported,
+            "supported" to supported,
             "ready" to ready,
+            "recommendedMode" to recommendedMode,
             "reason" to reason,
             "requirements" to listOf(
                 hardwareRequirement(
@@ -235,16 +274,18 @@ class Giro360CapturePlugin :
                     "accelerometer",
                     "Acelerômetro",
                     hasAccelerometer,
+                    required = recommendedMode == "ar_tracked",
                 ),
                 hardwareRequirement(
                     "gyroscope",
                     "Giroscópio",
                     hasGyroscope,
+                    required = recommendedMode == "ar_tracked",
                 ),
                 mapOf(
                     "id" to "motion_tracking",
                     "label" to "Rastreamento ARCore 6-DoF",
-                    "required" to true,
+                    "required" to (recommendedMode == "ar_tracked"),
                     "state" to when {
                         availability.isSupported -> "available"
                         availability.isTransient || availability.isUnknown -> "checking"
@@ -266,7 +307,7 @@ class Giro360CapturePlugin :
                 mapOf(
                     "id" to "ar_service",
                     "label" to "Google Play Services para RA",
-                    "required" to true,
+                    "required" to (recommendedMode == "ar_tracked"),
                     "state" to when {
                         arCoreInstalled -> "available"
                         availability.isSupported -> "install_required"
@@ -286,6 +327,12 @@ class Giro360CapturePlugin :
                     nativeStitchingAvailable,
                     if (nativeStitchingAvailable) "Embarcado no plugin" else "Falha ao carregar",
                 ),
+                hardwareRequirement(
+                    "video_fallback",
+                    "Fallback somente por vídeo",
+                    videoModeSupported,
+                    if (videoModeSupported) "Disponível" else "Indisponível",
+                ),
             ),
         )
     }
@@ -295,10 +342,11 @@ class Giro360CapturePlugin :
         label: String,
         available: Boolean,
         customMessage: String? = null,
+        required: Boolean = true,
     ): Map<String, Any> = mapOf(
         "id" to id,
         "label" to label,
-        "required" to true,
+        "required" to required,
         "state" to if (available) "available" else "missing",
         "message" to (customMessage ?: if (available) "Disponível" else "Não encontrado"),
     )
@@ -306,6 +354,13 @@ class Giro360CapturePlugin :
     private fun hasCameraPermission(): Boolean =
         applicationContext.checkSelfPermission(Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
+
+    private fun hasMotionHardware(): Boolean {
+        val sensorManager =
+            applicationContext.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        return sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) != null &&
+            sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null
+    }
 
     private fun hasRearCamera(): Boolean {
         val cameraManager =
@@ -321,6 +376,17 @@ class Giro360CapturePlugin :
         }
     }
 
+    private fun activeStatus(): Map<String, Any> =
+        if (activeCaptureMode == "video_only") videoCoordinator.status() else coordinator.status()
+
+    private fun cancelActiveCapture() {
+        if (activeCaptureMode == "video_only") {
+            videoCoordinator.cancelCapture()
+        } else {
+            coordinator.cancelCapture()
+        }
+    }
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
@@ -333,7 +399,7 @@ class Giro360CapturePlugin :
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED &&
             currentActivity != null
         ) {
-            requestArCoreInstall(currentActivity, pending)
+            prepareAvailableMode(currentActivity, pending)
         } else {
             supportInfo(pending::success)
         }
@@ -363,10 +429,12 @@ class Giro360CapturePlugin :
         activityBinding = null
         activity = null
         coordinator.pause()
+        videoCoordinator.pause()
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         coordinator.close()
+        videoCoordinator.close()
         methodChannel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
         eventSink = null

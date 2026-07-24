@@ -7,6 +7,8 @@ import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.view.Surface
 import android.view.View
+import android.widget.FrameLayout
+import androidx.camera.view.PreviewView
 import com.google.ar.core.Coordinates2d
 import com.google.ar.core.Frame
 import io.flutter.plugin.common.StandardMessageCodec
@@ -20,16 +22,24 @@ import javax.microedition.khronos.opengles.GL10
 
 internal class Giro360PreviewFactory(
     private val coordinator: Giro360CaptureCoordinator,
+    private val videoCoordinator: Giro360VideoFallbackCoordinator,
 ) : PlatformViewFactory(StandardMessageCodec.INSTANCE) {
     override fun create(context: Context, viewId: Int, args: Any?): PlatformView =
-        Giro360PreviewView(context, coordinator)
+        Giro360PreviewView(context, coordinator, videoCoordinator)
 }
 
 private class Giro360PreviewView(
     context: Context,
     private val coordinator: Giro360CaptureCoordinator,
+    private val videoCoordinator: Giro360VideoFallbackCoordinator,
 ) : PlatformView {
+    private val rootView = FrameLayout(context)
     private val surfaceView = GLSurfaceView(context)
+    private val cameraXPreview = PreviewView(context).apply {
+        implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+        scaleType = PreviewView.ScaleType.FILL_CENTER
+        visibility = View.GONE
+    }
 
     init {
         surfaceView.setEGLContextClientVersion(2)
@@ -37,13 +47,29 @@ private class Giro360PreviewView(
         surfaceView.setRenderer(CameraBackgroundRenderer(context, surfaceView, coordinator))
         surfaceView.renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         surfaceView.onResume()
+        rootView.addView(
+            surfaceView,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        rootView.addView(
+            cameraXPreview,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
         coordinator.attachPreview(surfaceView)
+        videoCoordinator.attachPreview(cameraXPreview)
     }
 
-    override fun getView(): View = surfaceView
+    override fun getView(): View = rootView
 
     override fun dispose() {
         coordinator.detachPreview(surfaceView)
+        videoCoordinator.detachPreview(cameraXPreview)
         surfaceView.onPause()
     }
 }

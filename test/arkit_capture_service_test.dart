@@ -22,6 +22,7 @@ void main() {
       'platform': 'android',
       'supported': true,
       'ready': false,
+      'recommendedMode': 'ar_tracked',
       'reason': 'Autorize a câmera.',
       'requirements': <Object?>[
         <Object?, Object?>{
@@ -43,8 +44,40 @@ void main() {
 
     expect(info.supported, isTrue);
     expect(info.ready, isFalse);
+    expect(info.recommendedMode, Giro360CaptureMode.arTracked);
     expect(info.canPrepare, isTrue);
     expect(info.blockingRequirements.single.id, 'camera_permission');
+  });
+
+  test('accepts video-only fallback with optional motion sensors', () {
+    final info = Giro360SupportInfo.fromMap({
+      'platform': 'android',
+      'supported': true,
+      'ready': true,
+      'recommendedMode': 'video_only',
+      'reason': 'Modo vídeo disponível.',
+      'requirements': <Object?>[
+        <Object?, Object?>{
+          'id': 'gyroscope',
+          'label': 'Giroscópio',
+          'required': false,
+          'state': 'missing',
+          'message': 'Opcional no modo vídeo',
+        },
+        <Object?, Object?>{
+          'id': 'camera_permission',
+          'label': 'Permissão da câmera',
+          'required': true,
+          'state': 'available',
+          'message': 'Autorizada',
+        },
+      ],
+    });
+
+    expect(info.supported, isTrue);
+    expect(info.ready, isTrue);
+    expect(info.recommendedMode, Giro360CaptureMode.videoOnly);
+    expect(info.blockingRequirements, isEmpty);
   });
 }
 

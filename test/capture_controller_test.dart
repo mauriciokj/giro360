@@ -84,6 +84,7 @@ class _FakeCaptureBackend implements Giro360CaptureBackend {
         platform: 'test',
         supported: true,
         ready: true,
+        recommendedMode: Giro360CaptureMode.arTracked,
         reason: 'ok',
         requirements: <Giro360RequirementStatus>[],
       );

@@ -1,5 +1,5 @@
 group = "com.giro360.giro360_capture"
-version = "0.1.0-dev.1"
+version = "0.1.0-dev.2"
 
 buildscript {
     val kotlinVersion = "2.2.20"
@@ -79,4 +79,9 @@ android {
 dependencies {
     implementation("com.google.ar:core:1.54.0")
     implementation("org.opencv:opencv:4.14.0")
+    val cameraXVersion = "1.4.2"
+    implementation("androidx.camera:camera-camera2:$cameraXVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraXVersion")
+    implementation("androidx.camera:camera-video:$cameraXVersion")
+    implementation("androidx.camera:camera-view:$cameraXVersion")
 }

@@ -18,6 +18,20 @@ enum Giro360RequirementState {
   }
 }
 
+enum Giro360CaptureMode {
+  arTracked,
+  videoOnly,
+  unavailable;
+
+  static Giro360CaptureMode fromNative(String value) {
+    return switch (value) {
+      'ar_tracked' => Giro360CaptureMode.arTracked,
+      'video_only' => Giro360CaptureMode.videoOnly,
+      _ => Giro360CaptureMode.unavailable,
+    };
+  }
+}
+
 class Giro360RequirementStatus {
   const Giro360RequirementStatus({
     required this.id,
@@ -57,6 +71,7 @@ class Giro360SupportInfo {
     required this.platform,
     required this.supported,
     required this.ready,
+    required this.recommendedMode,
     required this.reason,
     required this.requirements,
   });
@@ -67,6 +82,9 @@ class Giro360SupportInfo {
       platform: map['platform'] as String? ?? 'unsupported',
       supported: map['supported'] as bool? ?? false,
       ready: map['ready'] as bool? ?? false,
+      recommendedMode: Giro360CaptureMode.fromNative(
+        map['recommendedMode'] as String? ?? 'unavailable',
+      ),
       reason: map['reason'] as String? ?? 'Compatibilidade desconhecida.',
       requirements: rawRequirements is List
           ? rawRequirements
@@ -82,6 +100,7 @@ class Giro360SupportInfo {
       platform: platform,
       supported: false,
       ready: false,
+      recommendedMode: Giro360CaptureMode.unavailable,
       reason: 'A captura Giro360 ainda não está disponível nesta plataforma.',
       requirements: const <Giro360RequirementStatus>[],
     );
@@ -90,6 +109,7 @@ class Giro360SupportInfo {
   final String platform;
   final bool supported;
   final bool ready;
+  final Giro360CaptureMode recommendedMode;
   final String reason;
   final List<Giro360RequirementStatus> requirements;
 

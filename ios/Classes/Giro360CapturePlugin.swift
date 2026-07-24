@@ -163,6 +163,7 @@ public final class Giro360CapturePlugin: NSObject, FlutterPlugin, FlutterStreamH
       "platform": "ios",
       "supported": hardwareSupported,
       "ready": ready,
+      "recommendedMode": hardwareSupported ? "ar_tracked" : "unavailable",
       "reason": reason,
       "requirements": [
         requirement(

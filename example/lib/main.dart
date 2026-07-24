@@ -207,9 +207,11 @@ class SupportPanel extends StatelessWidget {
           Text(
             info == null
                 ? 'Verificando este aparelho'
-                : info.supported
-                    ? 'Aparelho compatível'
-                    : 'Captura indisponível',
+                : switch (info.recommendedMode) {
+                    Giro360CaptureMode.arTracked => 'Modo completo disponível',
+                    Giro360CaptureMode.videoOnly => 'Modo vídeo disponível',
+                    Giro360CaptureMode.unavailable => 'Captura indisponível',
+                  },
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 6),
@@ -238,16 +240,21 @@ class RequirementRow extends StatelessWidget {
     final available = requirement.available;
     final pending = requirement.needsUserAction ||
         requirement.state == Giro360RequirementState.checking;
+    final optional = !requirement.required && !available;
     final color = available
         ? const Color(0xff45d6a8)
-        : pending
-            ? const Color(0xffffdf7e)
-            : const Color(0xffffb4ab);
+        : optional
+            ? const Color(0xff9fb6b2)
+            : pending
+                ? const Color(0xffffdf7e)
+                : const Color(0xffffb4ab);
     final icon = available
         ? Icons.check_circle_outline
-        : pending
-            ? Icons.info_outline
-            : Icons.cancel_outlined;
+        : optional
+            ? Icons.remove_circle_outline
+            : pending
+                ? Icons.info_outline
+                : Icons.cancel_outlined;
 
     return Padding(
       padding: const EdgeInsets.only(top: 7),
@@ -300,7 +307,11 @@ class CaptureProgressPanel extends StatelessWidget {
             Text(
               'Volta ${value.activeLap}/${value.requiredLaps} · '
               '${value.progressDegrees.toStringAsFixed(0)}° · '
-              '${value.captureSource == 'video' ? 'vídeo' : 'frames diretos'}',
+              '${switch (value.captureSource) {
+                'video' => 'vídeo + AR',
+                'videoOnly' => 'somente vídeo',
+                _ => 'frames diretos',
+              }}',
             ),
           ],
         ],
