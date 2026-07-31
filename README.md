@@ -73,6 +73,14 @@ fechamento do panorama. Isso indica duas frentes independentes: reduzir a
 paralaxe na montagem e garantir no software a cobertura de todos os setores e o
 fechamento circular entre `0` e `360` graus.
 
+No modo Android `arTracked`, uma volta com pelo menos 90% dos setores medidos
+pode recuperar as poucas lacunas diretamente do MP4, interpolando o instante
+entre os setores vizinhos. O panorama só é enviado ao stitcher depois de formar
+uma sequência ordenada completa. O campo `reconstructedBins` do diagnóstico
+identifica quais setores foram recuperados; uma cobertura inferior a 90% é
+rejeitada. O resultado também avisa quando a translação indica que a lente ficou
+fora do eixo recomendado do tripé.
+
 ## Diagnóstico ao abrir
 
 ```dart

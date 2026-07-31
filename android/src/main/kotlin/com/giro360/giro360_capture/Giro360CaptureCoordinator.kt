@@ -61,6 +61,7 @@ internal data class Giro360AndroidFrameCandidate(
     val frameTimestamp: Double,
     val cameraIntrinsics: List<Double>,
     val cameraTransform: List<Double>,
+    val selectionSource: String = "captured",
 ) {
     fun flutterValue(): Map<String, Any> = mapOf(
         "binIndex" to binIndex,
@@ -81,6 +82,7 @@ internal data class Giro360AndroidFrameCandidate(
         "videoTimeSeconds" to frameTimestamp,
         "cameraIntrinsics" to cameraIntrinsics,
         "cameraTransform" to cameraTransform,
+        "selectionSource" to selectionSource,
     )
 }
 
@@ -138,6 +140,7 @@ internal class Giro360CaptureCoordinator(
     private var selectedFrameStartSeconds = 0.0
     private var selectedFrameEndSeconds = 0.0
     private var selectedLapIndex: Int? = null
+    private val reconstructedBinIndices = mutableListOf<Int>()
     private var lastStatusEmissionNanos = 0L
     private var captureGeneration = 0L
     private val videoTimeline = mutableListOf<Map<String, Any>>()
@@ -235,6 +238,7 @@ internal class Giro360CaptureCoordinator(
             selectedFrameStartSeconds = 0.0
             selectedFrameEndSeconds = 0.0
             selectedLapIndex = null
+            reconstructedBinIndices.clear()
             lastStatusEmissionNanos = 0
             videoTimeline.clear()
             candidates.clear()
@@ -582,8 +586,12 @@ internal class Giro360CaptureCoordinator(
             try {
                 val selection = bestCoherentLapCandidatesLocked()
                 selectedLapIndex = selection.first
+                val completeSelection = reconstructMissingBinsLocked(
+                    selection.first,
+                    selection.second,
+                )
                 finalCandidates.clear()
-                selection.second.forEach { candidate ->
+                completeSelection.forEach { candidate ->
                     finalCandidates[candidate.binIndex] = candidate
                 }
                 writeTimelineLocked()
@@ -621,8 +629,18 @@ internal class Giro360CaptureCoordinator(
                     "frames puderam ser extraídos."
             } else {
                 complete = true
-                message = "Vídeo salvo. Volta ${(selectedLapIndex ?: 0) + 1} " +
-                    "selecionada com $encodedCandidateCount frames."
+                val averageTranslation = finalCandidates.values
+                    .map { it.translationMeters }
+                    .average()
+                message = if (averageTranslation > AXIS_TRANSLATION_WARNING_METERS ||
+                    maxTranslationMeters > AXIS_MAX_TRANSLATION_WARNING_METERS
+                ) {
+                    "Panorama concluído, mas a lente saiu do eixo. " +
+                        "Posicione a câmera sobre o centro do tripé."
+                } else {
+                    "Vídeo salvo. Volta ${(selectedLapIndex ?: 0) + 1} " +
+                        "selecionada com $encodedCandidateCount frames."
+                }
             }
             Log.i(
                 LOG_TAG,
@@ -742,6 +760,7 @@ internal class Giro360CaptureCoordinator(
             put("selectedFrameEndSeconds", selectedFrameEndSeconds)
             put("selectedLap", (selectedLapIndex ?: 0) + 1)
             put("binCount", binCount)
+            put("reconstructedBins", JSONArray(reconstructedBinIndices))
             put("lapCandidateCounts", JSONArray(lapCandidateCountsLocked()))
             put("processedFrameCount", processedFrameCount)
             put("rejectedTrackingFrameCount", rejectedTrackingFrameCount)
@@ -770,6 +789,134 @@ internal class Giro360CaptureCoordinator(
             }
         }
         return bestLap to bestFrames
+    }
+
+    private fun reconstructMissingBinsLocked(
+        lapIndex: Int?,
+        selectedFrames: List<Giro360AndroidFrameCandidate>,
+    ): List<Giro360AndroidFrameCandidate> {
+        reconstructedBinIndices.clear()
+        if (selectedFrames.size == binCount) return selectedFrames.sortedBy { it.binIndex }
+
+        val minimumMeasuredBins = max(2, (binCount * 9 + 9) / 10)
+        if (lapIndex == null || selectedFrames.size < minimumMeasuredBins) {
+            error(
+                "A melhor volta cobriu só ${selectedFrames.size}/$binCount setores; " +
+                    "faça outra captura mais lenta.",
+            )
+        }
+
+        val completed = selectedFrames.associateBy { it.binIndex }.toMutableMap()
+        for (missingBin in 0 until binCount) {
+            if (completed.containsKey(missingBin)) continue
+            val previous = nearestCandidate(completed, missingBin, -1)
+            val next = nearestCandidate(completed, missingBin, 1)
+            if (previous == null || next == null) {
+                error("Não foi possível reconstruir o setor $missingBin do vídeo.")
+            }
+
+            val span = positiveModulo(next.binIndex - previous.binIndex, binCount)
+            val offset = positiveModulo(missingBin - previous.binIndex, binCount)
+            val ratio = if (span == 0) 0.5 else offset.toDouble() / span
+            val timestamp = interpolatedFrameTimestamp(
+                lapIndex,
+                missingBin,
+                previous,
+                next,
+                selectedFrames,
+                ratio,
+            )
+            val targetYaw = missingBin * TWO_PI / binCount
+            completed[missingBin] = Giro360AndroidFrameCandidate(
+                binIndex = missingBin,
+                lapIndex = lapIndex,
+                filePath = String.format(
+                    Locale.US,
+                    "%s/video_%03d.jpg",
+                    directoryPath,
+                    missingBin,
+                ),
+                targetYaw = targetYaw,
+                relativeYaw = targetYaw,
+                pitch = interpolate(previous.pitch, next.pitch, ratio),
+                roll = interpolate(previous.roll, next.roll, ratio),
+                translationMeters = interpolate(
+                    previous.translationMeters,
+                    next.translationMeters,
+                    ratio,
+                ),
+                qualityScore = min(previous.qualityScore, next.qualityScore) - 5.0,
+                sharpnessScore = min(previous.sharpnessScore, next.sharpnessScore),
+                angularSpeed = interpolate(
+                    previous.angularSpeed,
+                    next.angularSpeed,
+                    ratio,
+                ),
+                centerError = 0.0,
+                trackingState = "interpolated_video",
+                capturedAt = isoDate(),
+                frameTimestamp = timestamp,
+                cameraIntrinsics = interpolateList(
+                    previous.cameraIntrinsics,
+                    next.cameraIntrinsics,
+                    ratio,
+                ),
+                cameraTransform = previous.cameraTransform,
+                selectionSource = "interpolated_video",
+            )
+            reconstructedBinIndices += missingBin
+        }
+        Log.i(LOG_TAG, "Reconstructed video bins: $reconstructedBinIndices")
+        return completed.values.sortedBy { it.binIndex }
+    }
+
+    private fun nearestCandidate(
+        candidatesByBin: Map<Int, Giro360AndroidFrameCandidate>,
+        originBin: Int,
+        direction: Int,
+    ): Giro360AndroidFrameCandidate? {
+        for (distance in 1 until binCount) {
+            val bin = positiveModulo(originBin + direction * distance, binCount)
+            candidatesByBin[bin]?.let { return it }
+        }
+        return null
+    }
+
+    private fun interpolatedFrameTimestamp(
+        lapIndex: Int,
+        missingBin: Int,
+        previous: Giro360AndroidFrameCandidate,
+        next: Giro360AndroidFrameCandidate,
+        allFrames: List<Giro360AndroidFrameCandidate>,
+        ratio: Double,
+    ): Double {
+        if (next.frameTimestamp > previous.frameTimestamp) {
+            return interpolate(previous.frameTimestamp, next.frameTimestamp, ratio)
+        }
+
+        val measuredStep = allFrames.sortedBy { it.frameTimestamp }
+            .zipWithNext { first, second -> second.frameTimestamp - first.frameTimestamp }
+            .filter { it > 0.0 }
+            .sorted()
+            .let { steps ->
+                if (steps.isEmpty()) 1.0 else steps[steps.size / 2]
+            }
+        return when {
+            missingBin == 0 && lapIndex > 0 -> next.frameTimestamp - measuredStep
+            missingBin == 0 -> previous.frameTimestamp + measuredStep
+            else -> previous.frameTimestamp + measuredStep
+        }.coerceAtLeast(0.0)
+    }
+
+    private fun interpolate(start: Double, end: Double, ratio: Double): Double =
+        start + (end - start) * ratio
+
+    private fun interpolateList(
+        start: List<Double>,
+        end: List<Double>,
+        ratio: Double,
+    ): List<Double> = start.zip(end) { first, second ->
+        interpolate(first, second, ratio)
     }
 
     private fun lapCandidateCountsLocked(): List<Int> =
@@ -823,6 +970,7 @@ internal class Giro360CaptureCoordinator(
             "binCount" to binCount,
             "selectedCount" to statusCandidates.size,
             "selectedLap" to ((selectedLapIndex ?: coherentSelection.first ?: -1) + 1),
+            "reconstructedBins" to reconstructedBinIndices.toList(),
             "lapCandidateCounts" to lapCandidateCountsLocked(),
             "missingBins" to (0 until binCount).filter { it !in selectedBins },
             "currentPitchDegrees" to currentPitch * 180 / PI,
@@ -935,6 +1083,9 @@ internal class Giro360CaptureCoordinator(
     private fun positiveModulo(value: Double, modulus: Double): Double =
         ((value % modulus) + modulus) % modulus
 
+    private fun positiveModulo(value: Int, modulus: Int): Int =
+        ((value % modulus) + modulus) % modulus
+
     private fun isoDate(): String = SimpleDateFormat(
         "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
         Locale.US,
@@ -947,5 +1098,7 @@ internal class Giro360CaptureCoordinator(
         private const val TWO_PI = PI * 2
         private const val JPEG_QUALITY = 94
         private const val VIDEO_TIMESTAMP_TOLERANCE_SECONDS = 0.25
+        private const val AXIS_TRANSLATION_WARNING_METERS = 0.08
+        private const val AXIS_MAX_TRANSLATION_WARNING_METERS = 0.12
     }
 }
