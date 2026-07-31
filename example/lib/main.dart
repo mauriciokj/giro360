@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:giro360_capture/giro360_capture.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() => runApp(const Giro360ExampleApp());
 
@@ -40,6 +41,7 @@ class _CaptureExampleScreenState extends State<CaptureExampleScreen> {
   File? _panorama;
   String? _error;
   bool _starting = false;
+  bool _sharing = false;
 
   @override
   void initState() {
@@ -136,6 +138,31 @@ class _CaptureExampleScreenState extends State<CaptureExampleScreen> {
     }
   }
 
+  Future<void> _sharePanorama() async {
+    final panorama = _panorama;
+    if (panorama == null || _sharing) return;
+
+    setState(() => _sharing = true);
+    try {
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [
+            XFile(
+              panorama.path,
+              mimeType: 'image/jpeg',
+              name: 'giro360_panorama.jpg',
+            ),
+          ],
+          text: 'Panorama criado com Giro360',
+        ),
+      );
+    } catch (error) {
+      if (mounted) setState(() => _error = 'Não foi possível compartilhar: $error');
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
   @override
   void dispose() {
     unawaited(_events?.cancel());
@@ -189,7 +216,18 @@ class _CaptureExampleScreenState extends State<CaptureExampleScreen> {
                       onPressed: _controller.cancel,
                       child: const Text('Cancelar'),
                     )
-                  else
+                  else ...[
+                    if (_panorama != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: OutlinedButton.icon(
+                          onPressed: _sharing ? null : _sharePanorama,
+                          icon: const Icon(Icons.ios_share),
+                          label: Text(
+                            _sharing ? 'Abrindo compartilhamento' : 'Compartilhar imagem',
+                          ),
+                        ),
+                      ),
                     FilledButton.icon(
                       onPressed: support?.supported == true && !_starting
                           ? _prepareAndStart
@@ -203,6 +241,7 @@ class _CaptureExampleScreenState extends State<CaptureExampleScreen> {
                       ),
                       label: Text(_buttonLabel(support)),
                     ),
+                  ],
                 ],
               ),
             ),

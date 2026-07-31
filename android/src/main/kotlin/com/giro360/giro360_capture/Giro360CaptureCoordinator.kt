@@ -3,33 +3,35 @@ package com.giro360.giro360_capture
 import android.app.Activity
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
 import android.graphics.Matrix
-import android.graphics.YuvImage
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.Image
+import android.media.MediaMetadataRetriever
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.Surface
 import android.view.View
 import com.google.ar.core.CameraConfigFilter
 import com.google.ar.core.CameraConfig
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
+import com.google.ar.core.RecordingConfig
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.NotYetAvailableException
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.EnumSet
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.PI
 import kotlin.math.abs
@@ -90,6 +92,7 @@ internal class Giro360CaptureCoordinator(
     private val mainHandler = Handler(Looper.getMainLooper())
     private val stateLock = Any()
     private val previewView = AtomicReference<View?>()
+    private val finalizationExecutor = Executors.newSingleThreadExecutor()
 
     @Volatile
     private var session: Session? = null
@@ -125,10 +128,19 @@ internal class Giro360CaptureCoordinator(
     private var processedFrameCount = 0
     private var rejectedTrackingFrameCount = 0
     private var rejectedTranslationFrameCount = 0
+    private var rejectedCameraImageFrameCount = 0
     private var encodedCandidateCount = 0
+    private var recordedVideoFrameCount = 0
+    private var droppedVideoFrameCount = 0
+    private var videoPath = ""
     private var videoTimelinePath = ""
+    private var videoDurationSeconds = 0.0
+    private var selectedFrameStartSeconds = 0.0
+    private var selectedFrameEndSeconds = 0.0
     private var selectedLapIndex: Int? = null
     private var lastStatusEmissionNanos = 0L
+    private var captureGeneration = 0L
+    private val videoTimeline = mutableListOf<Map<String, Any>>()
     private val candidates = mutableMapOf<Int, Giro360AndroidFrameCandidate>()
     private val finalCandidates = mutableMapOf<Int, Giro360AndroidFrameCandidate>()
 
@@ -168,9 +180,10 @@ internal class Giro360CaptureCoordinator(
                 EnumSet.of(CameraConfig.TargetFps.TARGET_FPS_30),
             ),
         )
-        cameraConfigs.maxByOrNull {
-            it.imageSize.width.toLong() * it.imageSize.height.toLong()
-        }?.let { newSession.cameraConfig = it }
+        val captureConfig = cameraConfigs.maxByOrNull {
+            it.imageSize.width.toLong() * it.imageSize.height
+        }
+        captureConfig?.let { newSession.cameraConfig = it }
 
         val config = Config(newSession).apply {
             updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
@@ -184,6 +197,7 @@ internal class Giro360CaptureCoordinator(
         newSession.setDisplayGeometry(displayRotation, displayWidth, displayHeight)
 
         synchronized(stateLock) {
+            captureGeneration += 1
             this.activity = activity
             this.directoryPath = directoryPath
             this.binCount = binCount
@@ -211,29 +225,63 @@ internal class Giro360CaptureCoordinator(
             processedFrameCount = 0
             rejectedTrackingFrameCount = 0
             rejectedTranslationFrameCount = 0
+            rejectedCameraImageFrameCount = 0
             encodedCandidateCount = 0
-            videoTimelinePath = "$directoryPath/giro360_android_timeline.json"
+            recordedVideoFrameCount = 0
+            droppedVideoFrameCount = 0
+            videoPath = "$directoryPath/giro360_capture.mp4"
+            videoTimelinePath = "$directoryPath/giro360_video_timeline.json"
+            videoDurationSeconds = 0.0
+            selectedFrameStartSeconds = 0.0
+            selectedFrameEndSeconds = 0.0
             selectedLapIndex = null
             lastStatusEmissionNanos = 0
+            videoTimeline.clear()
             candidates.clear()
             finalCandidates.clear()
         }
 
         session = newSession
-        newSession.resume()
+        try {
+            File(videoPath).delete()
+            newSession.resume()
+            newSession.startRecording(
+                RecordingConfig(newSession)
+                    .setMp4DatasetUri(Uri.fromFile(File(videoPath)))
+                    .setAutoStopOnPause(false)
+                    .setRecordingRotation(imageRotationDegrees()),
+            )
+        } catch (error: Throwable) {
+            synchronized(stateLock) {
+                failLocked(
+                    "Não foi possível iniciar o vídeo ARCore: " +
+                        (error.localizedMessage ?: error.javaClass.simpleName),
+                )
+            }
+            closeSession()
+            emitStatus(force = true)
+            return
+        }
         emitStatus(force = true)
     }
 
     fun updateFrame(): Frame? {
+        if (!synchronized(stateLock) { running }) return null
         val currentSession = session ?: return null
         return try {
             val frame = currentSession.update()
-            processFrame(frame)
+            // ARCore can return a bootstrap frame with no media timestamp.
+            // It must not become the origin for the recorded MP4 timeline.
+            if (frame.timestamp > 0L) {
+                processFrame(frame)
+            }
             frame
         } catch (error: Throwable) {
+            Log.e(LOG_TAG, "ARCore frame update failed", error)
             synchronized(stateLock) {
-                if (running || finishing) {
-                    failLocked("Falha no ARCore: ${error.localizedMessage}")
+                if (running) {
+                    val detail = error.localizedMessage ?: error.javaClass.simpleName
+                    failLocked("Falha no ARCore: $detail")
                 }
             }
             emitStatus(force = true)
@@ -246,23 +294,54 @@ internal class Giro360CaptureCoordinator(
     }
 
     fun cancelCapture() {
+        var shouldStopRecording = false
         synchronized(stateLock) {
             if (!running && !finishing) return
+            shouldStopRecording = running
+            captureGeneration += 1
             running = false
             finishing = false
             complete = false
             message = "Captura cancelada."
+        }
+        if (shouldStopRecording) {
+            try {
+                session?.stopRecording()
+            } catch (_: Throwable) {
+                // A gravação pode ainda não ter produzido o primeiro frame.
+            }
         }
         pause()
         emitStatus(force = true)
     }
 
     fun pause() {
+        val interrupted = synchronized(stateLock) {
+            if (!running) {
+                false
+            } else {
+                captureGeneration += 1
+                running = false
+                finishing = false
+                failed = true
+                complete = false
+                message = "Captura interrompida. Reinicie as duas voltas."
+                true
+            }
+        }
+        if (interrupted) {
+            try {
+                session?.stopRecording()
+            } catch (_: Throwable) {
+                // A gravação pode já ter sido interrompida pelo sistema.
+            }
+        }
         try {
             session?.pause()
         } catch (_: Throwable) {
             // A sessão pode já ter sido interrompida pelo sistema.
         }
+        if (interrupted) emitStatus(force = true)
         updateKeepScreenOn()
     }
 
@@ -275,6 +354,11 @@ internal class Giro360CaptureCoordinator(
         val previous = session
         session = null
         try {
+            previous?.stopRecording()
+        } catch (_: Throwable) {
+            // A sessão pode não estar gravando.
+        }
+        try {
             previous?.pause()
         } catch (_: Throwable) {
             // Nada a fazer.
@@ -283,6 +367,7 @@ internal class Giro360CaptureCoordinator(
     }
 
     private fun processFrame(frame: Frame) {
+        if (frame.timestamp <= 0L) return
         val camera = frame.camera
         val frameTrackingState = when (camera.trackingState) {
             TrackingState.TRACKING -> "normal"
@@ -293,6 +378,7 @@ internal class Giro360CaptureCoordinator(
         synchronized(stateLock) {
             if (!running || finishing) return
             processedFrameCount += 1
+            recordedVideoFrameCount += 1
             trackingState = frameTrackingState
 
             val pose = camera.displayOrientedPose
@@ -331,6 +417,18 @@ internal class Giro360CaptureCoordinator(
             currentAngularSpeed = abs(yawDelta) / deltaTime
             if (abs(yawDelta) > 0.45) return
             unwrappedYaw += yawDelta
+
+            videoTimeline += mapOf(
+                "videoTimeSeconds" to
+                    ((frame.timestamp - (firstFrameTimestamp ?: frame.timestamp)) /
+                        1_000_000_000.0),
+                "relativeYawRadians" to unwrappedYaw,
+                "pitchRadians" to pitch,
+                "rollRadians" to roll,
+                "translationMeters" to currentTranslationMeters,
+                "angularSpeedRadiansPerSecond" to currentAngularSpeed,
+                "trackingState" to trackingState,
+            )
 
             if (direction == 0.0 && abs(unwrappedYaw) >= 0.18) {
                 direction = if (unwrappedYaw >= 0) 1.0 else -1.0
@@ -373,7 +471,6 @@ internal class Giro360CaptureCoordinator(
                 emitStatus()
                 return
             }
-            lastSelectionTimestamp = frame.timestamp
             considerFrameLocked(frame, directedProgress, pitch, roll)
             emitStatus()
         }
@@ -392,126 +489,265 @@ internal class Giro360CaptureCoordinator(
         val centerError = abs(normalizedAngle(circularYaw - targetYaw))
         if (centerError > step * 0.52) return
 
-        val image = try {
-            frame.acquireCameraImage()
+        val lapIndex = min(
+            requiredLaps - 1,
+            max(0, floor(directedProgress / TWO_PI).toInt()),
+        )
+        val key = lapIndex * binCount + nearestBin
+
+        val sharpness = try {
+            val image = frame.acquireCameraImage()
+            try {
+                lumaSharpness(image)
+            } finally {
+                image.close()
+            }
         } catch (_: NotYetAvailableException) {
-            return
+            rejectedCameraImageFrameCount += 1
+            0.0
         }
+        val sharpnessScore = min(34.0, sharpness * 0.55)
+        val centerScore = max(0.0, 22.0 * (1 - centerError / (step * 0.52)))
+        val speedPenalty = max(0.0, currentAngularSpeed - 0.28) * 12
+        val pitchPenalty = abs(pitch) * 18
+        val translationPenalty = currentTranslationMeters * 135
+        val score = 24.0 + sharpnessScore + centerScore - speedPenalty -
+            pitchPenalty - translationPenalty
+        val previousScore = candidates[key]?.qualityScore ?: -Double.MAX_VALUE
+        if (score < previousScore + 0.35) return
 
-        try {
-            val sharpness = lumaSharpness(image)
-            val sharpnessScore = min(34.0, sharpness * 0.55)
-            val centerScore = max(0.0, 22.0 * (1 - centerError / (step * 0.52)))
-            val speedPenalty = max(0.0, currentAngularSpeed - 0.28) * 12
-            val pitchPenalty = abs(pitch) * 18
-            val translationPenalty = currentTranslationMeters * 135
-            val score = 24.0 + sharpnessScore + centerScore - speedPenalty -
-                pitchPenalty - translationPenalty
-            val lapIndex = min(
-                requiredLaps - 1,
-                max(0, floor(directedProgress / TWO_PI).toInt()),
-            )
-            val key = lapIndex * binCount + nearestBin
-            val previousScore = candidates[key]?.qualityScore ?: -Double.MAX_VALUE
-            if (score < previousScore + 0.35) return
-
-            val candidatePath = String.format(
-                Locale.US,
-                "%s/android_lap_%02d_bin_%03d.jpg",
-                directoryPath,
-                lapIndex,
-                nearestBin,
-            )
-            val jpeg = imageToPortraitJpeg(image)
-            File(candidatePath).writeBytes(jpeg)
-
-            val poseMatrix = FloatArray(16)
-            frame.camera.displayOrientedPose.toMatrix(poseMatrix, 0)
-            val intrinsics = frame.camera.imageIntrinsics
-            val focal = intrinsics.focalLength
-            val principal = intrinsics.principalPoint
-            val timestampSeconds = (frame.timestamp - (firstFrameTimestamp ?: frame.timestamp)) /
-                1_000_000_000.0
-
-            candidates[key] = Giro360AndroidFrameCandidate(
-                binIndex = nearestBin,
-                lapIndex = lapIndex,
-                filePath = candidatePath,
-                targetYaw = targetYaw,
-                relativeYaw = circularYaw,
-                pitch = pitch,
-                roll = roll,
-                translationMeters = currentTranslationMeters,
-                qualityScore = score,
-                sharpnessScore = sharpness,
-                angularSpeed = currentAngularSpeed,
-                centerError = centerError,
-                trackingState = trackingState,
-                capturedAt = isoDate(),
-                frameTimestamp = timestampSeconds,
-                cameraIntrinsics = listOf(
-                    focal[0].toDouble(), 0.0, principal[0].toDouble(),
-                    0.0, focal[1].toDouble(), principal[1].toDouble(),
-                    0.0, 0.0, 1.0,
-                ),
-                cameraTransform = poseMatrix.map(Float::toDouble),
-            )
-        } finally {
-            image.close()
-        }
+        val poseMatrix = FloatArray(16)
+        frame.camera.displayOrientedPose.toMatrix(poseMatrix, 0)
+        val intrinsics = frame.camera.imageIntrinsics
+        val focal = intrinsics.focalLength
+        val principal = intrinsics.principalPoint
+        val candidatePath = String.format(
+            Locale.US,
+            "%s/video_%03d.jpg",
+            directoryPath,
+            nearestBin,
+        )
+        val frameTimestamp = (frame.timestamp - (firstFrameTimestamp ?: frame.timestamp)) /
+            1_000_000_000.0
+        candidates[key] = Giro360AndroidFrameCandidate(
+            binIndex = nearestBin,
+            lapIndex = lapIndex,
+            filePath = candidatePath,
+            targetYaw = targetYaw,
+            relativeYaw = circularYaw,
+            pitch = pitch,
+            roll = roll,
+            translationMeters = currentTranslationMeters,
+            qualityScore = score,
+            sharpnessScore = sharpness,
+            angularSpeed = currentAngularSpeed,
+            centerError = centerError,
+            trackingState = trackingState,
+            capturedAt = isoDate(),
+            frameTimestamp = frameTimestamp,
+            cameraIntrinsics = listOf(
+                focal[0].toDouble(), 0.0, principal[0].toDouble(),
+                0.0, focal[1].toDouble(), principal[1].toDouble(),
+                0.0, 0.0, 1.0,
+            ),
+            cameraTransform = poseMatrix.map(Float::toDouble),
+        )
+        lastSelectionTimestamp = frame.timestamp
     }
 
     private fun finishCaptureLocked() {
         if (finishing) return
         running = false
         finishing = true
-        message = "Selecionando os melhores frames da volta..."
+        message = "Salvando o vídeo das duas voltas..."
+        val generation = captureGeneration
         try {
+            session?.stopRecording()
             session?.pause()
-            val selection = bestCoherentLapCandidatesLocked()
-            selectedLapIndex = selection.first
-            finalCandidates.clear()
+        } catch (error: Throwable) {
+            failLocked(
+                "Falha ao salvar o vídeo Android: " +
+                    (error.localizedMessage ?: error.javaClass.simpleName),
+            )
+            emitStatus(force = true)
+            return
+        }
+        finalizationExecutor.execute { finalizeVideoCapture(generation) }
+        emitStatus(force = true)
+    }
 
-            selection.second.forEach { candidate ->
-                val finalPath = String.format(
-                    Locale.US,
-                    "%s/video_%03d.jpg",
-                    directoryPath,
-                    candidate.binIndex,
+    private fun finalizeVideoCapture(generation: Long) {
+        synchronized(stateLock) {
+            if (generation != captureGeneration || !finishing) return
+            try {
+                val selection = bestCoherentLapCandidatesLocked()
+                selectedLapIndex = selection.first
+                finalCandidates.clear()
+                selection.second.forEach { candidate ->
+                    finalCandidates[candidate.binIndex] = candidate
+                }
+                writeTimelineLocked()
+            } catch (error: Throwable) {
+                failLocked(
+                    "Falha ao preparar o vídeo Android: " +
+                        (error.localizedMessage ?: error.javaClass.simpleName),
                 )
-                File(candidate.filePath).copyTo(File(finalPath), overwrite = true)
-                finalCandidates[candidate.binIndex] = candidate.copy(filePath = finalPath)
+                emitStatus(force = true)
+                return
             }
-            encodedCandidateCount = finalCandidates.size
-            writeTimelineLocked()
-            finishing = false
+        }
 
+        val extractedCount = try {
+            extractSelectedFrames()
+        } catch (error: Throwable) {
+            synchronized(stateLock) {
+                failLocked(
+                    "O vídeo foi salvo, mas a extração falhou: " +
+                        (error.localizedMessage ?: error.javaClass.simpleName),
+                )
+            }
+            emitStatus(force = true)
+            return
+        }
+
+        synchronized(stateLock) {
+            if (generation != captureGeneration || !finishing) return
+            encodedCandidateCount = extractedCount
+            finishing = false
             val minimumFrameCount = max(24, (binCount * 0.75).toInt())
             if (encodedCandidateCount < minimumFrameCount) {
                 failed = true
-                message = "Só $encodedCandidateCount/$binCount frames úteis foram capturados."
+                message = "O vídeo foi salvo, mas só $encodedCandidateCount/$binCount " +
+                    "frames puderam ser extraídos."
             } else {
                 complete = true
-                message = "Volta ${(selectedLapIndex ?: 0) + 1} selecionada com " +
-                    "$encodedCandidateCount frames Android."
+                message = "Vídeo salvo. Volta ${(selectedLapIndex ?: 0) + 1} " +
+                    "selecionada com $encodedCandidateCount frames."
             }
-        } catch (error: Throwable) {
-            failLocked("Falha ao finalizar os frames Android: ${error.localizedMessage}")
+            Log.i(
+                LOG_TAG,
+                "Capture complete: selected=$encodedCandidateCount/$binCount, " +
+                    "lapCounts=${lapCandidateCountsLocked()}, " +
+                    "processed=$processedFrameCount, " +
+                    "trackingRejected=$rejectedTrackingFrameCount, " +
+                    "translationRejected=$rejectedTranslationFrameCount, " +
+                    "cameraImageUnavailable=$rejectedCameraImageFrameCount",
+            )
         }
         emitStatus(force = true)
     }
 
+    private fun extractSelectedFrames(): Int {
+        val selected = synchronized(stateLock) {
+            finalCandidates.values.sortedBy { it.binIndex }
+        }
+        if (selected.isEmpty()) return 0
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(videoPath)
+            val durationMilliseconds = retriever.extractMetadata(
+                MediaMetadataRetriever.METADATA_KEY_DURATION,
+            )?.toLongOrNull() ?: error("O MP4 não informou sua duração.")
+            if (durationMilliseconds <= 0L) {
+                error("O MP4 foi salvo sem uma duração válida.")
+            }
+
+            val durationSeconds = durationMilliseconds / 1_000.0
+            val firstSelectedSeconds = selected.minOf { it.frameTimestamp }
+            val lastSelectedSeconds = selected.maxOf { it.frameTimestamp }
+            if (!firstSelectedSeconds.isFinite() ||
+                !lastSelectedSeconds.isFinite() ||
+                firstSelectedSeconds < 0.0 ||
+                lastSelectedSeconds > durationSeconds + VIDEO_TIMESTAMP_TOLERANCE_SECONDS
+            ) {
+                error(
+                    String.format(
+                        Locale.US,
+                        "Timestamps fora do vídeo: %.3f-%.3fs para MP4 de %.3fs.",
+                        firstSelectedSeconds,
+                        lastSelectedSeconds,
+                        durationSeconds,
+                    ),
+                )
+            }
+
+            synchronized(stateLock) {
+                videoDurationSeconds = durationSeconds
+                selectedFrameStartSeconds = firstSelectedSeconds
+                selectedFrameEndSeconds = lastSelectedSeconds
+                writeTimelineLocked()
+            }
+            Log.i(
+                LOG_TAG,
+                String.format(
+                    Locale.US,
+                    "Extracting %d frames at %.3f-%.3fs from %.3fs video",
+                    selected.size,
+                    firstSelectedSeconds,
+                    lastSelectedSeconds,
+                    durationSeconds,
+                ),
+            )
+
+            val lastValidTimestampMicros = max(0L, durationMilliseconds * 1_000L - 1_000L)
+            var extracted = 0
+            selected.forEach { candidate ->
+                val requestedTimestampMicros =
+                    (candidate.frameTimestamp * 1_000_000).toLong()
+                        .coerceIn(0L, lastValidTimestampMicros)
+                val frame = retriever.getFrameAtTime(
+                    requestedTimestampMicros,
+                    MediaMetadataRetriever.OPTION_CLOSEST,
+                ) ?: return@forEach
+                val portrait = ensurePortrait(frame)
+                FileOutputStream(candidate.filePath).use { stream ->
+                    portrait.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, stream)
+                }
+                if (portrait !== frame) portrait.recycle()
+                frame.recycle()
+                extracted += 1
+            }
+            extracted
+        } finally {
+            retriever.release()
+        }
+    }
+
+    private fun ensurePortrait(source: Bitmap): Bitmap {
+        if (source.height >= source.width) return source
+        return Bitmap.createBitmap(
+            source,
+            0,
+            0,
+            source.width,
+            source.height,
+            Matrix().apply { postRotate(90f) },
+            true,
+        )
+    }
+
     private fun writeTimelineLocked() {
-        val frames = finalCandidates.values.sortedBy { it.binIndex }
+        val jsonTimeline = JSONArray()
+        videoTimeline.forEach { sample -> jsonTimeline.put(JSONObject(sample)) }
         val jsonFrames = JSONArray()
-        frames.forEach { frame ->
+        finalCandidates.values.sortedBy { it.binIndex }.forEach { frame ->
             jsonFrames.put(JSONObject(frame.flutterValue()))
         }
         val root = JSONObject().apply {
-            put("captureSource", "directFrames")
+            put("captureSource", "video")
             put("platform", "android")
+            put("videoPath", videoPath)
+            put("videoDurationSeconds", videoDurationSeconds)
+            put("selectedFrameStartSeconds", selectedFrameStartSeconds)
+            put("selectedFrameEndSeconds", selectedFrameEndSeconds)
             put("selectedLap", (selectedLapIndex ?: 0) + 1)
             put("binCount", binCount)
+            put("lapCandidateCounts", JSONArray(lapCandidateCountsLocked()))
+            put("processedFrameCount", processedFrameCount)
+            put("rejectedTrackingFrameCount", rejectedTrackingFrameCount)
+            put("rejectedTranslationFrameCount", rejectedTranslationFrameCount)
+            put("rejectedCameraImageFrameCount", rejectedCameraImageFrameCount)
+            put("timeline", jsonTimeline)
             put("frames", jsonFrames)
         }
         File(videoTimelinePath).writeText(root.toString(2))
@@ -535,6 +771,11 @@ internal class Giro360CaptureCoordinator(
         }
         return bestLap to bestFrames
     }
+
+    private fun lapCandidateCountsLocked(): List<Int> =
+        (0 until requiredLaps).map { lap ->
+            candidates.values.count { it.lapIndex == lap }
+        }
 
     private fun coherentLapScore(frames: List<Giro360AndroidFrameCandidate>): Double {
         val count = frames.size.toDouble()
@@ -582,9 +823,7 @@ internal class Giro360CaptureCoordinator(
             "binCount" to binCount,
             "selectedCount" to statusCandidates.size,
             "selectedLap" to ((selectedLapIndex ?: coherentSelection.first ?: -1) + 1),
-            "lapCandidateCounts" to (0 until requiredLaps).map { lap ->
-                candidates.values.count { it.lapIndex == lap }
-            },
+            "lapCandidateCounts" to lapCandidateCountsLocked(),
             "missingBins" to (0 until binCount).filter { it !in selectedBins },
             "currentPitchDegrees" to currentPitch * 180 / PI,
             "currentRollDegrees" to currentRoll * 180 / PI,
@@ -593,13 +832,14 @@ internal class Giro360CaptureCoordinator(
             "maxTranslationMeters" to maxTranslationMeters,
             "processedFrameCount" to processedFrameCount,
             "encodedCandidateCount" to encodedCandidateCount,
-            "recordedVideoFrameCount" to 0,
-            "droppedVideoFrameCount" to 0,
-            "videoPath" to "",
+            "recordedVideoFrameCount" to recordedVideoFrameCount,
+            "droppedVideoFrameCount" to droppedVideoFrameCount,
+            "videoPath" to videoPath,
             "videoTimelinePath" to videoTimelinePath,
-            "captureSource" to "directFrames",
+            "captureSource" to "video",
             "rejectedTrackingFrameCount" to rejectedTrackingFrameCount,
             "rejectedTranslationFrameCount" to rejectedTranslationFrameCount,
+            "rejectedCameraImageFrameCount" to rejectedCameraImageFrameCount,
             "frames" to statusCandidates.map { it.flutterValue() },
         )
     }
@@ -628,66 +868,6 @@ internal class Giro360CaptureCoordinator(
         failed = true
         complete = false
         message = detail
-    }
-
-    private fun imageToPortraitJpeg(image: Image): ByteArray {
-        val width = image.width
-        val height = image.height
-        val nv21 = ByteArray(width * height * 3 / 2)
-        copyPlane(image.planes[0], width, height, nv21, 0, 1)
-
-        var output = width * height
-        val chromaWidth = width / 2
-        val chromaHeight = height / 2
-        val u = image.planes[1]
-        val v = image.planes[2]
-        for (row in 0 until chromaHeight) {
-            for (column in 0 until chromaWidth) {
-                nv21[output++] = planeByte(v, row, column)
-                nv21[output++] = planeByte(u, row, column)
-            }
-        }
-
-        val rawStream = ByteArrayOutputStream()
-        YuvImage(nv21, ImageFormat.NV21, width, height, null)
-            .compressToJpeg(android.graphics.Rect(0, 0, width, height), 94, rawStream)
-        val rawJpeg = rawStream.toByteArray()
-        val rotation = imageRotationDegrees()
-        if (rotation == 0) return rawJpeg
-
-        val source = BitmapFactory.decodeByteArray(rawJpeg, 0, rawJpeg.size)
-        val matrix = Matrix().apply { postRotate(rotation.toFloat()) }
-        val rotated = Bitmap.createBitmap(
-            source,
-            0,
-            0,
-            source.width,
-            source.height,
-            matrix,
-            true,
-        )
-        val rotatedStream = ByteArrayOutputStream()
-        rotated.compress(Bitmap.CompressFormat.JPEG, 94, rotatedStream)
-        if (rotated !== source) rotated.recycle()
-        source.recycle()
-        return rotatedStream.toByteArray()
-    }
-
-    private fun copyPlane(
-        plane: Image.Plane,
-        width: Int,
-        height: Int,
-        output: ByteArray,
-        offset: Int,
-        outputPixelStride: Int,
-    ) {
-        var outputIndex = offset
-        for (row in 0 until height) {
-            for (column in 0 until width) {
-                output[outputIndex] = planeByte(plane, row, column)
-                outputIndex += outputPixelStride
-            }
-        }
     }
 
     private fun planeByte(plane: Image.Plane, row: Int, column: Int): Byte {
@@ -763,6 +943,9 @@ internal class Giro360CaptureCoordinator(
     }.format(Date())
 
     companion object {
+        private const val LOG_TAG = "Giro360Capture"
         private const val TWO_PI = PI * 2
+        private const val JPEG_QUALITY = 94
+        private const val VIDEO_TIMESTAMP_TOLERANCE_SECONDS = 0.25
     }
 }

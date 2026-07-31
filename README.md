@@ -37,6 +37,42 @@ gravado e mede o deslocamento entre amostras usando ORB. Grave duas voltas no
 mesmo sentido, com o celular em pé e girando em torno da lente. A velocidade pode
 variar, pois os frames são distribuídos pelo movimento visual acumulado.
 
+## Posicionamento no tripé
+
+O eixo vertical de rotação precisa passar pelo centro da lente traseira, não pelo
+centro do celular ou tablet. Em aparelhos com a câmera na lateral, prender o
+dispositivo pelo centro faz a lente descrever um círculo durante a volta. Esse
+deslocamento produz paralaxe: objetos próximos mudam de posição em relação aos
+distantes e podem aparecer quebrados ou duplicados no panorama.
+
+Use este procedimento na orientação em que a captura será realizada:
+
+1. Monte o dispositivo com a lente traseira diretamente acima do eixo de rotação
+   da cabeça do tripé.
+2. Use um trilho, braço lateral ou suporte deslocável quando a câmera não estiver
+   no centro do aparelho.
+3. Mantenha a lente nivelada, na mesma altura e sem inclinar o suporte durante as
+   duas voltas.
+4. Alinhe visualmente um objeto próximo com outro distante e gire alguns graus
+   para cada lado. Ajuste o suporte enquanto os objetos mudarem de posição um em
+   relação ao outro.
+5. Afaste mãos, operador e partes do suporte do campo de visão e faça as duas
+   voltas lentamente, sempre no mesmo sentido.
+
+Texto curto recomendado para o helper do aplicativo:
+
+> Posicione a lente sobre o centro do tripé. O tablet pode ficar deslocado. Antes
+> de começar, gire um pouco para os lados e confirme que objetos próximos não se
+> movem em relação aos distantes.
+
+Nos testes com o Galaxy Tab, uma captura com `30/30` setores apresentou
+deslocamento médio de `11,2 cm` e máximo de `15,1 cm`. Uma montagem melhor reduziu
+esses valores para `6,5 cm` e `8,8 cm`, respectivamente, mas terminou com `29/30`
+setores. A segunda imagem ficou melhor, embora ainda tenha repetido conteúdo no
+fechamento do panorama. Isso indica duas frentes independentes: reduzir a
+paralaxe na montagem e garantir no software a cobertura de todos os setores e o
+fechamento circular entre `0` e `360` graus.
+
 ## Diagnóstico ao abrir
 
 ```dart
@@ -177,10 +213,9 @@ video_000.jpg ... video_029.jpg
 giro360_panorama.jpg
 ```
 
-O iOS também mantém `giro360_capture.mp4` e
-`giro360_video_timeline.json`. No Android, `arTracked` salva
-`giro360_android_timeline.json` com `captureSource: directFrames`; a importação
-mantém `giro360_capture.mp4` e `giro360_video_only_timeline.json` com
+O iOS e o modo Android `arTracked` também mantêm `giro360_capture.mp4` e
+`giro360_video_timeline.json`, com os keyframes e métricas da pose. A importação
+Android mantém `giro360_capture.mp4` e `giro360_video_only_timeline.json` com
 `captureSource: importedVideo` e métricas da análise ORB.
 
 ## Exemplo e validação
