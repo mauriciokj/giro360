@@ -81,6 +81,26 @@ identifica quais setores foram recuperados; uma cobertura inferior a 90% é
 rejeitada. O resultado também avisa quando a translação indica que a lente ficou
 fora do eixo recomendado do tripé.
 
+## Diagnóstico geométrico
+
+O modo Android `arTracked` registra a calibração observada e o fechamento das
+duas voltas no status e em `giro360_video_timeline.json`:
+
+```dart
+final calibration = result.captureStatus.cameraCalibration;
+print(calibration.horizontalFovDegrees);
+print(calibration.focalLengthVariationPercent);
+
+final closure = result.captureStatus.loopClosure;
+print(closure.meanTranslationMeters);
+print(closure.visualInlierRatio);
+print(closure.visualSpatialCoverage);
+```
+
+O fechamento visual usa ORB + RANSAC apenas como diagnóstico nesta etapa; ele
+não modifica a costura final. A sequência completa dos próximos experimentos
+está em [docs/ROADMAP_VISAO_COMPUTACIONAL.md](docs/ROADMAP_VISAO_COMPUTACIONAL.md).
+
 ## Diagnóstico ao abrir
 
 ```dart

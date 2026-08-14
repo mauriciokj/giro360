@@ -9,6 +9,7 @@ import android.hardware.camera2.CameraManager
 import android.media.Image
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -24,6 +25,18 @@ import com.google.ar.core.TrackingState
 import com.google.ar.core.exceptions.NotYetAvailableException
 import org.json.JSONArray
 import org.json.JSONObject
+import org.opencv.android.Utils
+import org.opencv.calib3d.Calib3d
+import org.opencv.core.Core
+import org.opencv.core.Mat
+import org.opencv.core.MatOfDMatch
+import org.opencv.core.MatOfKeyPoint
+import org.opencv.core.MatOfPoint2f
+import org.opencv.core.Point
+import org.opencv.core.Size
+import org.opencv.features2d.BFMatcher
+import org.opencv.features2d.ORB
+import org.opencv.imgproc.Imgproc
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
@@ -34,7 +47,9 @@ import java.util.TimeZone
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.PI
+import kotlin.math.acos
 import kotlin.math.abs
+import kotlin.math.atan
 import kotlin.math.atan2
 import kotlin.math.floor
 import kotlin.math.hypot
@@ -62,6 +77,8 @@ internal data class Giro360AndroidFrameCandidate(
     val cameraIntrinsics: List<Double>,
     val cameraTransform: List<Double>,
     val selectionSource: String = "captured",
+    val cameraImageWidth: Int = 0,
+    val cameraImageHeight: Int = 0,
 ) {
     fun flutterValue(): Map<String, Any> = mapOf(
         "binIndex" to binIndex,
@@ -83,7 +100,92 @@ internal data class Giro360AndroidFrameCandidate(
         "cameraIntrinsics" to cameraIntrinsics,
         "cameraTransform" to cameraTransform,
         "selectionSource" to selectionSource,
+        "cameraImageWidth" to cameraImageWidth,
+        "cameraImageHeight" to cameraImageHeight,
     )
+}
+
+private data class Giro360CalibrationDiagnostics(
+    val available: Boolean = false,
+    val stable: Boolean = false,
+    val imageWidth: Int = 0,
+    val imageHeight: Int = 0,
+    val meanFxPixels: Double = 0.0,
+    val meanFyPixels: Double = 0.0,
+    val meanCxPixels: Double = 0.0,
+    val meanCyPixels: Double = 0.0,
+    val horizontalFovDegrees: Double = 0.0,
+    val verticalFovDegrees: Double = 0.0,
+    val focalLengthVariationPercent: Double = 0.0,
+    val principalPointDriftPercent: Double = 0.0,
+    val cameraCharacteristics: Map<String, Any> = emptyMap(),
+) {
+    fun value(): Map<String, Any> = mapOf(
+        "available" to available,
+        "stable" to stable,
+        "imageWidth" to imageWidth,
+        "imageHeight" to imageHeight,
+        "meanFxPixels" to meanFxPixels,
+        "meanFyPixels" to meanFyPixels,
+        "meanCxPixels" to meanCxPixels,
+        "meanCyPixels" to meanCyPixels,
+        "horizontalFovDegrees" to horizontalFovDegrees,
+        "verticalFovDegrees" to verticalFovDegrees,
+        "focalLengthVariationPercent" to focalLengthVariationPercent,
+        "principalPointDriftPercent" to principalPointDriftPercent,
+        "cameraCharacteristics" to cameraCharacteristics,
+    )
+}
+
+private data class Giro360LoopClosureDiagnostics(
+    val matchedBinCount: Int = 0,
+    val meanTranslationMeters: Double = 0.0,
+    val maxTranslationMeters: Double = 0.0,
+    val meanRotationDegrees: Double = 0.0,
+    val maxRotationDegrees: Double = 0.0,
+    val meanYawErrorDegrees: Double = 0.0,
+    val maxYawErrorDegrees: Double = 0.0,
+    val poseReliable: Boolean = false,
+    val visualAnalyzed: Boolean = false,
+    val visualReferenceBin: Int = -1,
+    val visualRawMatchCount: Int = 0,
+    val visualGoodMatchCount: Int = 0,
+    val visualInlierCount: Int = 0,
+    val visualInlierRatio: Double = 0.0,
+    val visualSpatialCoverage: Double = 0.0,
+    val visualMeanReprojectionErrorPixels: Double = 0.0,
+    val visualReliable: Boolean = false,
+) {
+    fun value(): Map<String, Any> = mapOf(
+        "matchedBinCount" to matchedBinCount,
+        "meanTranslationMeters" to meanTranslationMeters,
+        "maxTranslationMeters" to maxTranslationMeters,
+        "meanRotationDegrees" to meanRotationDegrees,
+        "maxRotationDegrees" to maxRotationDegrees,
+        "meanYawErrorDegrees" to meanYawErrorDegrees,
+        "maxYawErrorDegrees" to maxYawErrorDegrees,
+        "poseReliable" to poseReliable,
+        "visualAnalyzed" to visualAnalyzed,
+        "visualReferenceBin" to visualReferenceBin,
+        "visualRawMatchCount" to visualRawMatchCount,
+        "visualGoodMatchCount" to visualGoodMatchCount,
+        "visualInlierCount" to visualInlierCount,
+        "visualInlierRatio" to visualInlierRatio,
+        "visualSpatialCoverage" to visualSpatialCoverage,
+        "visualMeanReprojectionErrorPixels" to visualMeanReprojectionErrorPixels,
+        "visualReliable" to visualReliable,
+    )
+}
+
+private data class Giro360ClosureFeatures(
+    val keypoints: Array<org.opencv.core.KeyPoint>,
+    val descriptors: Mat,
+    val width: Int,
+    val height: Int,
+) {
+    fun release() {
+        descriptors.release()
+    }
 }
 
 internal class Giro360CaptureCoordinator(
@@ -141,6 +243,9 @@ internal class Giro360CaptureCoordinator(
     private var selectedFrameEndSeconds = 0.0
     private var selectedLapIndex: Int? = null
     private val reconstructedBinIndices = mutableListOf<Int>()
+    private var cameraCharacteristics = emptyMap<String, Any>()
+    private var calibrationDiagnostics = Giro360CalibrationDiagnostics()
+    private var loopClosureDiagnostics = Giro360LoopClosureDiagnostics()
     private var lastStatusEmissionNanos = 0L
     private var captureGeneration = 0L
     private val videoTimeline = mutableListOf<Map<String, Any>>()
@@ -187,6 +292,14 @@ internal class Giro360CaptureCoordinator(
             it.imageSize.width.toLong() * it.imageSize.height
         }
         captureConfig?.let { newSession.cameraConfig = it }
+        val selectedCameraConfig = newSession.cameraConfig
+        val selectedCameraCharacteristics = readCameraCharacteristics(
+            selectedCameraConfig.cameraId,
+            selectedCameraConfig.imageSize.width,
+            selectedCameraConfig.imageSize.height,
+            selectedCameraConfig.textureSize.width,
+            selectedCameraConfig.textureSize.height,
+        )
 
         val config = Config(newSession).apply {
             updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
@@ -239,6 +352,11 @@ internal class Giro360CaptureCoordinator(
             selectedFrameEndSeconds = 0.0
             selectedLapIndex = null
             reconstructedBinIndices.clear()
+            cameraCharacteristics = selectedCameraCharacteristics
+            calibrationDiagnostics = Giro360CalibrationDiagnostics(
+                cameraCharacteristics = selectedCameraCharacteristics,
+            )
+            loopClosureDiagnostics = Giro360LoopClosureDiagnostics()
             lastStatusEmissionNanos = 0
             videoTimeline.clear()
             candidates.clear()
@@ -525,6 +643,7 @@ internal class Giro360CaptureCoordinator(
         val intrinsics = frame.camera.imageIntrinsics
         val focal = intrinsics.focalLength
         val principal = intrinsics.principalPoint
+        val imageDimensions = intrinsics.imageDimensions
         val candidatePath = String.format(
             Locale.US,
             "%s/video_%03d.jpg",
@@ -555,6 +674,8 @@ internal class Giro360CaptureCoordinator(
                 0.0, 0.0, 1.0,
             ),
             cameraTransform = poseMatrix.map(Float::toDouble),
+            cameraImageWidth = imageDimensions[0],
+            cameraImageHeight = imageDimensions[1],
         )
         lastSelectionTimestamp = frame.timestamp
     }
@@ -594,6 +715,10 @@ internal class Giro360CaptureCoordinator(
                 completeSelection.forEach { candidate ->
                     finalCandidates[candidate.binIndex] = candidate
                 }
+                calibrationDiagnostics = calculateCalibrationDiagnosticsLocked(
+                    completeSelection,
+                )
+                loopClosureDiagnostics = calculateLoopClosureDiagnosticsLocked()
                 writeTimelineLocked()
             } catch (error: Throwable) {
                 failLocked(
@@ -632,7 +757,14 @@ internal class Giro360CaptureCoordinator(
                 val averageTranslation = finalCandidates.values
                     .map { it.translationMeters }
                     .average()
-                message = if (averageTranslation > AXIS_TRANSLATION_WARNING_METERS ||
+                val closureWarning = loopClosureDiagnostics.matchedBinCount > 0 &&
+                    (!loopClosureDiagnostics.poseReliable ||
+                        (loopClosureDiagnostics.visualAnalyzed &&
+                            !loopClosureDiagnostics.visualReliable))
+                message = if (closureWarning) {
+                    "Panorama concluído, mas a volta fechou com desvio. " +
+                        "Confira o eixo do tripé e a sobreposição."
+                } else if (averageTranslation > AXIS_TRANSLATION_WARNING_METERS ||
                     maxTranslationMeters > AXIS_MAX_TRANSLATION_WARNING_METERS
                 ) {
                     "Panorama concluído, mas a lente saiu do eixo. " +
@@ -649,7 +781,9 @@ internal class Giro360CaptureCoordinator(
                     "processed=$processedFrameCount, " +
                     "trackingRejected=$rejectedTrackingFrameCount, " +
                     "translationRejected=$rejectedTranslationFrameCount, " +
-                    "cameraImageUnavailable=$rejectedCameraImageFrameCount",
+                    "cameraImageUnavailable=$rejectedCameraImageFrameCount, " +
+                    "closurePoseReliable=${loopClosureDiagnostics.poseReliable}, " +
+                    "closureVisualReliable=${loopClosureDiagnostics.visualReliable}",
             )
         }
         emitStatus(force = true)
@@ -694,6 +828,21 @@ internal class Giro360CaptureCoordinator(
                 selectedFrameStartSeconds = firstSelectedSeconds
                 selectedFrameEndSeconds = lastSelectedSeconds
                 writeTimelineLocked()
+            }
+
+            val visualClosurePair = synchronized(stateLock) {
+                visualClosurePairLocked()
+            }
+            if (visualClosurePair != null) {
+                val visualDiagnostics = analyzeVisualLoopClosure(
+                    retriever,
+                    visualClosurePair.first,
+                    visualClosurePair.second,
+                )
+                synchronized(stateLock) {
+                    loopClosureDiagnostics = visualDiagnostics
+                    writeTimelineLocked()
+                }
             }
             Log.i(
                 LOG_TAG,
@@ -766,6 +915,8 @@ internal class Giro360CaptureCoordinator(
             put("rejectedTrackingFrameCount", rejectedTrackingFrameCount)
             put("rejectedTranslationFrameCount", rejectedTranslationFrameCount)
             put("rejectedCameraImageFrameCount", rejectedCameraImageFrameCount)
+            put("cameraCalibration", JSONObject(calibrationDiagnostics.value()))
+            put("loopClosure", JSONObject(loopClosureDiagnostics.value()))
             put("timeline", jsonTimeline)
             put("frames", jsonFrames)
         }
@@ -789,6 +940,311 @@ internal class Giro360CaptureCoordinator(
             }
         }
         return bestLap to bestFrames
+    }
+
+    private fun calculateCalibrationDiagnosticsLocked(
+        selectedFrames: List<Giro360AndroidFrameCandidate>,
+    ): Giro360CalibrationDiagnostics {
+        val measured = selectedFrames.filter {
+            it.selectionSource == "captured" &&
+                it.cameraIntrinsics.size >= 6 &&
+                it.cameraImageWidth > 0 &&
+                it.cameraImageHeight > 0
+        }
+        if (measured.isEmpty()) {
+            return Giro360CalibrationDiagnostics(
+                cameraCharacteristics = cameraCharacteristics,
+            )
+        }
+
+        val width = measured.map { it.cameraImageWidth }.groupingBy { it }
+            .eachCount().maxByOrNull { it.value }?.key ?: measured.first().cameraImageWidth
+        val height = measured.map { it.cameraImageHeight }.groupingBy { it }
+            .eachCount().maxByOrNull { it.value }?.key ?: measured.first().cameraImageHeight
+        val fx = measured.map { it.cameraIntrinsics[0] }
+        val fy = measured.map { it.cameraIntrinsics[4] }
+        val cx = measured.map { it.cameraIntrinsics[2] }
+        val cy = measured.map { it.cameraIntrinsics[5] }
+        val meanFx = fx.average()
+        val meanFy = fy.average()
+        val meanCx = cx.average()
+        val meanCy = cy.average()
+        val focalVariation = max(
+            relativeSpanPercent(fx, meanFx),
+            relativeSpanPercent(fy, meanFy),
+        )
+        val principalDrift = max(
+            span(cx) / width.coerceAtLeast(1) * 100.0,
+            span(cy) / height.coerceAtLeast(1) * 100.0,
+        )
+        return Giro360CalibrationDiagnostics(
+            available = meanFx > 0.0 && meanFy > 0.0,
+            stable = focalVariation <= CALIBRATION_MAX_VARIATION_PERCENT &&
+                principalDrift <= CALIBRATION_MAX_PRINCIPAL_DRIFT_PERCENT,
+            imageWidth = width,
+            imageHeight = height,
+            meanFxPixels = meanFx,
+            meanFyPixels = meanFy,
+            meanCxPixels = meanCx,
+            meanCyPixels = meanCy,
+            horizontalFovDegrees = fieldOfViewDegrees(width, meanFx),
+            verticalFovDegrees = fieldOfViewDegrees(height, meanFy),
+            focalLengthVariationPercent = focalVariation,
+            principalPointDriftPercent = principalDrift,
+            cameraCharacteristics = cameraCharacteristics,
+        )
+    }
+
+    private fun calculateLoopClosureDiagnosticsLocked(): Giro360LoopClosureDiagnostics {
+        if (requiredLaps < 2) return Giro360LoopClosureDiagnostics()
+        val closurePairs = loopClosureCandidatePairsLocked()
+        if (closurePairs.isEmpty()) return Giro360LoopClosureDiagnostics()
+
+        val translations = mutableListOf<Double>()
+        val rotations = mutableListOf<Double>()
+        val yawErrors = mutableListOf<Double>()
+        closurePairs.forEach { (first, last) ->
+            translations += transformTranslationDistance(
+                first.cameraTransform,
+                last.cameraTransform,
+            )
+            rotations += transformRotationDifferenceDegrees(
+                first.cameraTransform,
+                last.cameraTransform,
+            )
+            yawErrors += abs(normalizedAngle(last.relativeYaw - first.relativeYaw)) * 180 / PI
+        }
+        val meanTranslation = translations.average()
+        val maxTranslation = translations.maxOrNull() ?: 0.0
+        val meanRotation = rotations.average()
+        val maxRotation = rotations.maxOrNull() ?: 0.0
+        val minimumMatchedBins = max(4, (binCount * 4 + 4) / 5)
+        return Giro360LoopClosureDiagnostics(
+            matchedBinCount = closurePairs.size,
+            meanTranslationMeters = meanTranslation,
+            maxTranslationMeters = maxTranslation,
+            meanRotationDegrees = meanRotation,
+            maxRotationDegrees = maxRotation,
+            meanYawErrorDegrees = yawErrors.average(),
+            maxYawErrorDegrees = yawErrors.maxOrNull() ?: 0.0,
+            poseReliable = closurePairs.size >= minimumMatchedBins &&
+                meanTranslation <= LOOP_CLOSURE_MEAN_TRANSLATION_METERS &&
+                maxTranslation <= LOOP_CLOSURE_MAX_TRANSLATION_METERS &&
+                meanRotation <= LOOP_CLOSURE_MEAN_ROTATION_DEGREES &&
+                maxRotation <= LOOP_CLOSURE_MAX_ROTATION_DEGREES,
+        )
+    }
+
+    private fun visualClosurePairLocked(): Pair<
+        Giro360AndroidFrameCandidate,
+        Giro360AndroidFrameCandidate
+        >? {
+        if (requiredLaps < 2) return null
+        return loopClosureCandidatePairsLocked().maxByOrNull { (first, last) ->
+            last.frameTimestamp - first.frameTimestamp
+        }
+    }
+
+    private fun loopClosureCandidatePairsLocked(): List<Pair<
+        Giro360AndroidFrameCandidate,
+        Giro360AndroidFrameCandidate
+        >> {
+        val firstLap = candidates.values.filter { it.lapIndex == 0 }.associateBy { it.binIndex }
+        val lastLap = candidates.values.filter { it.lapIndex == requiredLaps - 1 }
+            .associateBy { it.binIndex }
+        val commonBins = firstLap.keys.intersect(lastLap.keys)
+        if (commonBins.isEmpty()) return emptyList()
+        val pairs = commonBins.map { bin ->
+            firstLap.getValue(bin) to lastLap.getValue(bin)
+        }.filter { (first, last) -> last.frameTimestamp > first.frameTimestamp }
+        val maximumSeparation = pairs.maxOfOrNull { (first, last) ->
+            last.frameTimestamp - first.frameTimestamp
+        } ?: return emptyList()
+        val minimumSeparation = maximumSeparation * LOOP_CLOSURE_MIN_TIME_SEPARATION_RATIO
+        return pairs.filter { (first, last) ->
+            last.frameTimestamp - first.frameTimestamp >= minimumSeparation
+        }
+    }
+
+    private fun analyzeVisualLoopClosure(
+        retriever: MediaMetadataRetriever,
+        first: Giro360AndroidFrameCandidate,
+        last: Giro360AndroidFrameCandidate,
+    ): Giro360LoopClosureDiagnostics {
+        val base = synchronized(stateLock) { loopClosureDiagnostics }
+        val firstRaw = retriever.getFrameAtTime(
+            (first.frameTimestamp * 1_000_000).toLong(),
+            MediaMetadataRetriever.OPTION_CLOSEST,
+        ) ?: return base
+        val lastRaw = retriever.getFrameAtTime(
+            (last.frameTimestamp * 1_000_000).toLong(),
+            MediaMetadataRetriever.OPTION_CLOSEST,
+        ) ?: run {
+            firstRaw.recycle()
+            return base
+        }
+        val firstBitmap = ensurePortrait(firstRaw)
+        val lastBitmap = ensurePortrait(lastRaw)
+        val orb = ORB.create(VISUAL_CLOSURE_ORB_FEATURES)
+        var firstFeatures: Giro360ClosureFeatures? = null
+        var lastFeatures: Giro360ClosureFeatures? = null
+        try {
+            firstFeatures = closureFeatures(firstBitmap, orb)
+            lastFeatures = closureFeatures(lastBitmap, orb)
+            return matchVisualClosure(
+                base,
+                first.binIndex,
+                firstFeatures,
+                lastFeatures,
+            )
+        } catch (error: Throwable) {
+            Log.w(LOG_TAG, "Visual loop closure analysis failed", error)
+            return base.copy(
+                visualAnalyzed = true,
+                visualReferenceBin = first.binIndex,
+            )
+        } finally {
+            firstFeatures?.release()
+            lastFeatures?.release()
+            orb.clear()
+            if (firstBitmap !== firstRaw) firstBitmap.recycle()
+            if (lastBitmap !== lastRaw) lastBitmap.recycle()
+            firstRaw.recycle()
+            lastRaw.recycle()
+        }
+    }
+
+    private fun closureFeatures(bitmap: Bitmap, orb: ORB): Giro360ClosureFeatures {
+        val source = Mat()
+        val scaled = Mat()
+        val gray = Mat()
+        val keypoints = MatOfKeyPoint()
+        val descriptors = Mat()
+        val mask = Mat()
+        try {
+            Utils.bitmapToMat(bitmap, source)
+            val width = min(VISUAL_CLOSURE_WIDTH, source.cols()).coerceAtLeast(1)
+            val height = max(1, source.rows() * width / source.cols().coerceAtLeast(1))
+            Imgproc.resize(source, scaled, Size(width.toDouble(), height.toDouble()))
+            Imgproc.cvtColor(scaled, gray, Imgproc.COLOR_RGBA2GRAY)
+            orb.detectAndCompute(gray, mask, keypoints, descriptors)
+            return Giro360ClosureFeatures(
+                keypoints = keypoints.toArray(),
+                descriptors = descriptors,
+                width = width,
+                height = height,
+            )
+        } finally {
+            source.release()
+            scaled.release()
+            gray.release()
+            keypoints.release()
+            mask.release()
+        }
+    }
+
+    private fun matchVisualClosure(
+        base: Giro360LoopClosureDiagnostics,
+        referenceBin: Int,
+        first: Giro360ClosureFeatures,
+        last: Giro360ClosureFeatures,
+    ): Giro360LoopClosureDiagnostics {
+        if (first.descriptors.empty() || last.descriptors.empty()) {
+            return base.copy(visualAnalyzed = true, visualReferenceBin = referenceBin)
+        }
+        val matcher = BFMatcher.create(Core.NORM_HAMMING, false)
+        val groups = mutableListOf<MatOfDMatch>()
+        val sourcePoints = mutableListOf<Point>()
+        val targetPoints = mutableListOf<Point>()
+        return try {
+            matcher.knnMatch(first.descriptors, last.descriptors, groups, 2)
+            groups.forEach { group ->
+                val pair = group.toArray()
+                if (pair.size < 2 || pair[0].distance >= VISUAL_CLOSURE_RATIO * pair[1].distance) {
+                    return@forEach
+                }
+                sourcePoints += first.keypoints[pair[0].queryIdx].pt
+                targetPoints += last.keypoints[pair[0].trainIdx].pt
+            }
+            if (sourcePoints.size < VISUAL_CLOSURE_MIN_GOOD_MATCHES) {
+                return base.copy(
+                    visualAnalyzed = true,
+                    visualReferenceBin = referenceBin,
+                    visualRawMatchCount = groups.size,
+                    visualGoodMatchCount = sourcePoints.size,
+                )
+            }
+
+            val sourceMat = MatOfPoint2f(*sourcePoints.toTypedArray())
+            val targetMat = MatOfPoint2f(*targetPoints.toTypedArray())
+            val inlierMask = Mat()
+            val projected = MatOfPoint2f()
+            val homography = Calib3d.findHomography(
+                sourceMat,
+                targetMat,
+                Calib3d.RANSAC,
+                VISUAL_CLOSURE_RANSAC_THRESHOLD_PIXELS,
+                inlierMask,
+                VISUAL_CLOSURE_RANSAC_ITERATIONS,
+                VISUAL_CLOSURE_RANSAC_CONFIDENCE,
+            )
+            try {
+                if (homography.empty()) {
+                    return base.copy(
+                        visualAnalyzed = true,
+                        visualReferenceBin = referenceBin,
+                        visualRawMatchCount = groups.size,
+                        visualGoodMatchCount = sourcePoints.size,
+                    )
+                }
+                Core.perspectiveTransform(sourceMat, projected, homography)
+                val projectedPoints = projected.toArray()
+                val maskValues = ByteArray(inlierMask.rows().coerceAtLeast(inlierMask.cols()))
+                if (maskValues.isNotEmpty()) inlierMask.get(0, 0, maskValues)
+                val inlierIndices = maskValues.indices.filter { maskValues[it].toInt() != 0 }
+                val errors = inlierIndices.map { index ->
+                    val dx = projectedPoints[index].x - targetPoints[index].x
+                    val dy = projectedPoints[index].y - targetPoints[index].y
+                    hypot(dx, dy)
+                }
+                val occupiedCells = inlierIndices.map { index ->
+                    val point = sourcePoints[index]
+                    val column = (point.x / first.width * VISUAL_CLOSURE_GRID_COLUMNS)
+                        .toInt().coerceIn(0, VISUAL_CLOSURE_GRID_COLUMNS - 1)
+                    val row = (point.y / first.height * VISUAL_CLOSURE_GRID_ROWS)
+                        .toInt().coerceIn(0, VISUAL_CLOSURE_GRID_ROWS - 1)
+                    row * VISUAL_CLOSURE_GRID_COLUMNS + column
+                }.toSet().size
+                val inlierCount = inlierIndices.size
+                val inlierRatio = inlierCount / sourcePoints.size.toDouble()
+                val spatialCoverage = occupiedCells.toDouble() /
+                    (VISUAL_CLOSURE_GRID_COLUMNS * VISUAL_CLOSURE_GRID_ROWS)
+                val meanError = if (errors.isEmpty()) 0.0 else errors.average()
+                return base.copy(
+                    visualAnalyzed = true,
+                    visualReferenceBin = referenceBin,
+                    visualRawMatchCount = groups.size,
+                    visualGoodMatchCount = sourcePoints.size,
+                    visualInlierCount = inlierCount,
+                    visualInlierRatio = inlierRatio,
+                    visualSpatialCoverage = spatialCoverage,
+                    visualMeanReprojectionErrorPixels = meanError,
+                    visualReliable = inlierCount >= VISUAL_CLOSURE_MIN_INLIERS &&
+                        inlierRatio >= VISUAL_CLOSURE_MIN_INLIER_RATIO &&
+                        spatialCoverage >= VISUAL_CLOSURE_MIN_SPATIAL_COVERAGE &&
+                        meanError <= VISUAL_CLOSURE_MAX_REPROJECTION_ERROR_PIXELS,
+                )
+            } finally {
+                sourceMat.release()
+                targetMat.release()
+                inlierMask.release()
+                projected.release()
+                homography.release()
+            }
+        } finally {
+            groups.forEach(MatOfDMatch::release)
+            matcher.clear()
+        }
     }
 
     private fun reconstructMissingBinsLocked(
@@ -863,6 +1319,8 @@ internal class Giro360CaptureCoordinator(
                 ),
                 cameraTransform = previous.cameraTransform,
                 selectionSource = "interpolated_video",
+                cameraImageWidth = previous.cameraImageWidth,
+                cameraImageHeight = previous.cameraImageHeight,
             )
             reconstructedBinIndices += missingBin
         }
@@ -988,6 +1446,8 @@ internal class Giro360CaptureCoordinator(
             "rejectedTrackingFrameCount" to rejectedTrackingFrameCount,
             "rejectedTranslationFrameCount" to rejectedTranslationFrameCount,
             "rejectedCameraImageFrameCount" to rejectedCameraImageFrameCount,
+            "cameraCalibration" to calibrationDiagnostics.value(),
+            "loopClosure" to loopClosureDiagnostics.value(),
             "frames" to statusCandidates.map { it.flutterValue() },
         )
     }
@@ -1045,6 +1505,102 @@ internal class Giro360CaptureCoordinator(
         return if (samples == 0) 0.0 else total / samples
     }
 
+    private fun readCameraCharacteristics(
+        cameraId: String,
+        imageWidth: Int,
+        imageHeight: Int,
+        textureWidth: Int,
+        textureHeight: Int,
+    ): Map<String, Any> {
+        val result = mutableMapOf<String, Any>(
+            "cameraId" to cameraId,
+            "arcoreImageSize" to listOf(imageWidth, imageHeight),
+            "arcoreTextureSize" to listOf(textureWidth, textureHeight),
+        )
+        return try {
+            val manager = applicationContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val characteristics = manager.getCameraCharacteristics(cameraId)
+            characteristics.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)?.let {
+                result["lensIntrinsicCalibration"] = it.map(Float::toDouble)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                characteristics.get(CameraCharacteristics.LENS_DISTORTION)?.let {
+                    result["lensDistortion"] = it.map(Float::toDouble)
+                }
+                characteristics.get(
+                    CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES,
+                )?.let {
+                    result["distortionCorrectionModes"] = it.toList()
+                }
+            }
+            characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.let {
+                result["availableFocalLengthsMillimeters"] = it.map(Float::toDouble)
+            }
+            characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)?.let {
+                result["sensorPhysicalSizeMillimeters"] = listOf(
+                    it.width.toDouble(),
+                    it.height.toDouble(),
+                )
+            }
+            characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE)?.let {
+                result["sensorPixelArraySize"] = listOf(it.width, it.height)
+            }
+            characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)?.let {
+                result["sensorActiveArray"] = listOf(it.left, it.top, it.right, it.bottom)
+            }
+            characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)?.let {
+                result["sensorOrientationDegrees"] = it
+            }
+            characteristics.get(CameraCharacteristics.LENS_FACING)?.let {
+                result["lensFacing"] = it
+            }
+            characteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)?.let {
+                result["hardwareLevel"] = it
+            }
+            characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES)?.let {
+                result["autoFocusModes"] = it.toList()
+            }
+            characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE)?.let {
+                result["minimumFocusDistanceDiopters"] = it.toDouble()
+            }
+            result
+        } catch (error: Throwable) {
+            result["readError"] = error.localizedMessage ?: error.javaClass.simpleName
+            result
+        }
+    }
+
+    private fun transformTranslationDistance(first: List<Double>, last: List<Double>): Double {
+        if (first.size < 15 || last.size < 15) return Double.POSITIVE_INFINITY
+        val x = last[12] - first[12]
+        val y = last[13] - first[13]
+        val z = last[14] - first[14]
+        return sqrt(x * x + y * y + z * z)
+    }
+
+    private fun transformRotationDifferenceDegrees(
+        first: List<Double>,
+        last: List<Double>,
+    ): Double {
+        if (first.size < 11 || last.size < 11) return 180.0
+        val trace = first[0] * last[0] + first[1] * last[1] + first[2] * last[2] +
+            first[4] * last[4] + first[5] * last[5] + first[6] * last[6] +
+            first[8] * last[8] + first[9] * last[9] + first[10] * last[10]
+        val cosine = ((trace - 1.0) / 2.0).coerceIn(-1.0, 1.0)
+        return acos(cosine) * 180 / PI
+    }
+
+    private fun fieldOfViewDegrees(imageSizePixels: Int, focalLengthPixels: Double): Double {
+        if (imageSizePixels <= 0 || focalLengthPixels <= 0.0) return 0.0
+        return 2.0 * atan(imageSizePixels / (2.0 * focalLengthPixels)) * 180 / PI
+    }
+
+    private fun span(values: List<Double>): Double =
+        (values.maxOrNull() ?: 0.0) - (values.minOrNull() ?: 0.0)
+
+    private fun relativeSpanPercent(values: List<Double>, mean: Double): Double =
+        if (mean == 0.0) 0.0 else span(values) / abs(mean) * 100.0
+
     private fun imageRotationDegrees(): Int {
         val currentActivity = activity ?: return 90
         val currentSession = session ?: return 90
@@ -1100,5 +1656,25 @@ internal class Giro360CaptureCoordinator(
         private const val VIDEO_TIMESTAMP_TOLERANCE_SECONDS = 0.25
         private const val AXIS_TRANSLATION_WARNING_METERS = 0.08
         private const val AXIS_MAX_TRANSLATION_WARNING_METERS = 0.12
+        private const val CALIBRATION_MAX_VARIATION_PERCENT = 0.5
+        private const val CALIBRATION_MAX_PRINCIPAL_DRIFT_PERCENT = 0.5
+        private const val LOOP_CLOSURE_MEAN_TRANSLATION_METERS = 0.05
+        private const val LOOP_CLOSURE_MAX_TRANSLATION_METERS = 0.10
+        private const val LOOP_CLOSURE_MEAN_ROTATION_DEGREES = 3.0
+        private const val LOOP_CLOSURE_MAX_ROTATION_DEGREES = 8.0
+        private const val LOOP_CLOSURE_MIN_TIME_SEPARATION_RATIO = 0.60
+        private const val VISUAL_CLOSURE_ORB_FEATURES = 1800
+        private const val VISUAL_CLOSURE_WIDTH = 720
+        private const val VISUAL_CLOSURE_RATIO = 0.76f
+        private const val VISUAL_CLOSURE_MIN_GOOD_MATCHES = 12
+        private const val VISUAL_CLOSURE_RANSAC_THRESHOLD_PIXELS = 3.0
+        private const val VISUAL_CLOSURE_RANSAC_ITERATIONS = 3000
+        private const val VISUAL_CLOSURE_RANSAC_CONFIDENCE = 0.995
+        private const val VISUAL_CLOSURE_GRID_COLUMNS = 4
+        private const val VISUAL_CLOSURE_GRID_ROWS = 3
+        private const val VISUAL_CLOSURE_MIN_INLIERS = 24
+        private const val VISUAL_CLOSURE_MIN_INLIER_RATIO = 0.45
+        private const val VISUAL_CLOSURE_MIN_SPATIAL_COVERAGE = 0.33
+        private const val VISUAL_CLOSURE_MAX_REPROJECTION_ERROR_PIXELS = 4.0
     }
 }

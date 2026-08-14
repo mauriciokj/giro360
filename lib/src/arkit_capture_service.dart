@@ -186,6 +186,8 @@ class Giro360CaptureStatus {
     required this.rejectedTrackingFrameCount,
     required this.rejectedTranslationFrameCount,
     required this.frames,
+    this.cameraCalibration = const Giro360CameraCalibrationDiagnostics(),
+    this.loopClosure = const Giro360LoopClosureDiagnostics(),
   });
 
   factory Giro360CaptureStatus.fromMap(Map<Object?, Object?> map) {
@@ -236,6 +238,12 @@ class Giro360CaptureStatus {
       ),
       rejectedTrackingFrameCount: _int(map, 'rejectedTrackingFrameCount'),
       rejectedTranslationFrameCount: _int(map, 'rejectedTranslationFrameCount'),
+      cameraCalibration: Giro360CameraCalibrationDiagnostics.fromMap(
+        _map(map['cameraCalibration']),
+      ),
+      loopClosure: Giro360LoopClosureDiagnostics.fromMap(
+        _map(map['loopClosure']),
+      ),
       frames: _objectList(map['frames'])
           .whereType<Map<Object?, Object?>>()
           .map(Giro360VideoFrame.fromMap)
@@ -281,6 +289,8 @@ class Giro360CaptureStatus {
   final int rejectedTrackingFrameCount;
   final int rejectedTranslationFrameCount;
   final List<Giro360VideoFrame> frames;
+  final Giro360CameraCalibrationDiagnostics cameraCalibration;
+  final Giro360LoopClosureDiagnostics loopClosure;
 
   int get activeLap {
     if (complete) {
@@ -288,6 +298,129 @@ class Giro360CaptureStatus {
     }
     return (completedLaps + 1).clamp(1, requiredLaps);
   }
+}
+
+class Giro360CameraCalibrationDiagnostics {
+  const Giro360CameraCalibrationDiagnostics({
+    this.available = false,
+    this.stable = false,
+    this.imageWidth = 0,
+    this.imageHeight = 0,
+    this.meanFxPixels = 0,
+    this.meanFyPixels = 0,
+    this.meanCxPixels = 0,
+    this.meanCyPixels = 0,
+    this.horizontalFovDegrees = 0,
+    this.verticalFovDegrees = 0,
+    this.focalLengthVariationPercent = 0,
+    this.principalPointDriftPercent = 0,
+    this.cameraCharacteristics = const <Object?, Object?>{},
+  });
+
+  factory Giro360CameraCalibrationDiagnostics.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return Giro360CameraCalibrationDiagnostics(
+      available: _bool(map, 'available'),
+      stable: _bool(map, 'stable'),
+      imageWidth: _int(map, 'imageWidth'),
+      imageHeight: _int(map, 'imageHeight'),
+      meanFxPixels: _double(map, 'meanFxPixels'),
+      meanFyPixels: _double(map, 'meanFyPixels'),
+      meanCxPixels: _double(map, 'meanCxPixels'),
+      meanCyPixels: _double(map, 'meanCyPixels'),
+      horizontalFovDegrees: _double(map, 'horizontalFovDegrees'),
+      verticalFovDegrees: _double(map, 'verticalFovDegrees'),
+      focalLengthVariationPercent: _double(
+        map,
+        'focalLengthVariationPercent',
+      ),
+      principalPointDriftPercent: _double(
+        map,
+        'principalPointDriftPercent',
+      ),
+      cameraCharacteristics: _map(map['cameraCharacteristics']),
+    );
+  }
+
+  final bool available;
+  final bool stable;
+  final int imageWidth;
+  final int imageHeight;
+  final double meanFxPixels;
+  final double meanFyPixels;
+  final double meanCxPixels;
+  final double meanCyPixels;
+  final double horizontalFovDegrees;
+  final double verticalFovDegrees;
+  final double focalLengthVariationPercent;
+  final double principalPointDriftPercent;
+  final Map<Object?, Object?> cameraCharacteristics;
+}
+
+class Giro360LoopClosureDiagnostics {
+  const Giro360LoopClosureDiagnostics({
+    this.matchedBinCount = 0,
+    this.meanTranslationMeters = 0,
+    this.maxTranslationMeters = 0,
+    this.meanRotationDegrees = 0,
+    this.maxRotationDegrees = 0,
+    this.meanYawErrorDegrees = 0,
+    this.maxYawErrorDegrees = 0,
+    this.poseReliable = false,
+    this.visualAnalyzed = false,
+    this.visualReferenceBin = -1,
+    this.visualRawMatchCount = 0,
+    this.visualGoodMatchCount = 0,
+    this.visualInlierCount = 0,
+    this.visualInlierRatio = 0,
+    this.visualSpatialCoverage = 0,
+    this.visualMeanReprojectionErrorPixels = 0,
+    this.visualReliable = false,
+  });
+
+  factory Giro360LoopClosureDiagnostics.fromMap(Map<Object?, Object?> map) {
+    return Giro360LoopClosureDiagnostics(
+      matchedBinCount: _int(map, 'matchedBinCount'),
+      meanTranslationMeters: _double(map, 'meanTranslationMeters'),
+      maxTranslationMeters: _double(map, 'maxTranslationMeters'),
+      meanRotationDegrees: _double(map, 'meanRotationDegrees'),
+      maxRotationDegrees: _double(map, 'maxRotationDegrees'),
+      meanYawErrorDegrees: _double(map, 'meanYawErrorDegrees'),
+      maxYawErrorDegrees: _double(map, 'maxYawErrorDegrees'),
+      poseReliable: _bool(map, 'poseReliable'),
+      visualAnalyzed: _bool(map, 'visualAnalyzed'),
+      visualReferenceBin: _int(map, 'visualReferenceBin'),
+      visualRawMatchCount: _int(map, 'visualRawMatchCount'),
+      visualGoodMatchCount: _int(map, 'visualGoodMatchCount'),
+      visualInlierCount: _int(map, 'visualInlierCount'),
+      visualInlierRatio: _double(map, 'visualInlierRatio'),
+      visualSpatialCoverage: _double(map, 'visualSpatialCoverage'),
+      visualMeanReprojectionErrorPixels: _double(
+        map,
+        'visualMeanReprojectionErrorPixels',
+      ),
+      visualReliable: _bool(map, 'visualReliable'),
+    );
+  }
+
+  final int matchedBinCount;
+  final double meanTranslationMeters;
+  final double maxTranslationMeters;
+  final double meanRotationDegrees;
+  final double maxRotationDegrees;
+  final double meanYawErrorDegrees;
+  final double maxYawErrorDegrees;
+  final bool poseReliable;
+  final bool visualAnalyzed;
+  final int visualReferenceBin;
+  final int visualRawMatchCount;
+  final int visualGoodMatchCount;
+  final int visualInlierCount;
+  final double visualInlierRatio;
+  final double visualSpatialCoverage;
+  final double visualMeanReprojectionErrorPixels;
+  final bool visualReliable;
 }
 
 class Giro360VideoFrame {
@@ -310,6 +443,9 @@ class Giro360VideoFrame {
     required this.videoTimeSeconds,
     required this.cameraIntrinsics,
     required this.cameraTransform,
+    this.selectionSource = 'captured',
+    this.cameraImageWidth = 0,
+    this.cameraImageHeight = 0,
   });
 
   factory Giro360VideoFrame.fromMap(Map<Object?, Object?> map) {
@@ -334,6 +470,9 @@ class Giro360VideoFrame {
       videoTimeSeconds: _double(map, 'videoTimeSeconds'),
       cameraIntrinsics: _doubleList(map['cameraIntrinsics']),
       cameraTransform: _doubleList(map['cameraTransform']),
+      selectionSource: _string(map, 'selectionSource', fallback: 'captured'),
+      cameraImageWidth: _int(map, 'cameraImageWidth'),
+      cameraImageHeight: _int(map, 'cameraImageHeight'),
     );
   }
 
@@ -355,6 +494,9 @@ class Giro360VideoFrame {
   final double videoTimeSeconds;
   final List<double> cameraIntrinsics;
   final List<double> cameraTransform;
+  final String selectionSource;
+  final int cameraImageWidth;
+  final int cameraImageHeight;
 }
 
 bool _bool(Map<Object?, Object?> map, String key) => map[key] == true;
@@ -387,4 +529,11 @@ List<Object?> _objectList(Object? value) {
     return const <Object?>[];
   }
   return value.cast<Object?>();
+}
+
+Map<Object?, Object?> _map(Object? value) {
+  if (value is! Map) {
+    return const <Object?, Object?>{};
+  }
+  return value.cast<Object?, Object?>();
 }
