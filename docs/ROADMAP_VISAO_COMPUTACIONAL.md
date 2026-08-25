@@ -50,6 +50,60 @@ Métricas mínimas:
 5. Validação em datasets como TartanAir, EuRoC, ETH3D, ScanNet e benchmarks
    panorâmicos compatíveis.
 
+## Benchmark planejado: M3ISR
+
+O [M3ISR no Hugging Face](https://huggingface.co/datasets/XinhuiLiu001/M3ISR)
+será usado como benchmark sintético controlado. O conjunto contém cenas internas
+e externas, seis câmeras sincronizadas, parâmetros intrínsecos e extrínsecos,
+profundidade ground truth, segmentação semântica e de instâncias e máscaras de
+regiões estáticas e dinâmicas.
+
+O principal objetivo deste benchmark é separar rotação pura de translação da
+câmera. Algumas vistas mantêm a mesma posição e variam o `yaw`, permitindo
+comparar diretamente o cenário ideal para panorama com casos que introduzem
+paralaxe.
+
+### Teste A: rotação com centro óptico fixo
+
+- [ ] Selecionar vistas com a mesma posição e rotações horizontais diferentes.
+- [ ] Gerar panoramas com homografia e projeção cilíndrica.
+- [ ] Comparar ORB, SIFT e, posteriormente, LightGlue no mesmo conjunto.
+- [ ] Medir matches, cobertura espacial, inlier ratio, erro de reprojeção,
+  fechamento da volta, seams e ghosting.
+- [ ] Confirmar a qualidade máxima esperada quando não existe translação.
+
+Resultado esperado: a homografia deve explicar a maior parte da transformação,
+sem conteúdo duplicado provocado por paralaxe. Este teste será a referência
+superior de qualidade do pipeline de stitching.
+
+### Teste B: câmera com translação
+
+- [ ] Selecionar pares e sequências com deslocamento conhecido entre câmeras.
+- [ ] Executar inicialmente o mesmo pipeline baseado em homografia.
+- [ ] Comparar homografia com matriz fundamental, matriz essencial e SfM.
+- [ ] Usar a profundidade ground truth para medir o erro por faixa de distância.
+- [ ] Avaliar warping e escolha de seam orientados por profundidade.
+- [ ] Repetir o teste separando regiões estáticas de objetos dinâmicos pelas
+  máscaras fornecidas pelo dataset.
+
+Resultado esperado: identificar os tipos de cena e as distâncias em que a
+homografia passa a produzir duplicação, desalinhamento e ghosting, e medir o
+ganho obtido com pose relativa, SfM e profundidade.
+
+### Teste C: limite entre homografia e SfM
+
+- [ ] Ordenar pares pela distância entre os centros de câmera.
+- [ ] Aumentar progressivamente a translação, mantendo cena, intrínsecos e
+  diferença angular tão constantes quanto possível.
+- [ ] Registrar a curva de erro de reprojeção, inlier ratio, consistência de
+  profundidade e erro visual conforme o deslocamento aumenta.
+- [ ] Definir um critério objetivo para o SDK escolher entre homografia e um
+  pipeline com geometria 3D.
+
+Cada execução deve salvar a seleção de câmeras, poses ground truth, parâmetros,
+panorama produzido, visualização dos matches, mapa de erro e uma linha na tabela
+comparativa. Cenas internas e externas devem ser avaliadas separadamente.
+
 ## Experimento atual: calibração e loop closure Android
 
 A primeira implementação registra `cameraCalibration` e `loopClosure` em
