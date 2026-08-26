@@ -322,7 +322,7 @@ internal class Giro360CaptureCoordinator(
             finishing = false
             complete = false
             failed = false
-            message = "Comece a girar devagar para um lado."
+            message = "Mantenha a tela voltada para você e gire o corpo inteiro devagar."
             trackingState = "initializing"
             firstFrameTimestamp = null
             initialPosition = null
@@ -570,7 +570,7 @@ internal class Giro360CaptureCoordinator(
 
                 movingWrongDirection -> "Continue no mesmo sentido da volta."
                 camera.trackingState == TrackingState.TRACKING ->
-                    "Continue devagar, mantendo a lente no mesmo ponto."
+                    "Gire o corpo junto com o tablet, mantendo a lente no mesmo ponto."
 
                 else -> {
                     rejectedTrackingFrameCount += 1

@@ -187,11 +187,14 @@ class Giro360CapturePlugin :
         }
 
         try {
-            val binCount = (call.argument<Int>("binCount") ?: 30).coerceIn(24, 90)
+            val requestedBinCount = (call.argument<Int>("binCount") ?: 30).coerceIn(24, 90)
             val requiredLaps = (call.argument<Int>("requiredLaps") ?: 2).coerceIn(1, 3)
             val useTrackedMode = hasMotionHardware() &&
                 availability == ArCoreApk.Availability.SUPPORTED_INSTALLED
             if (useTrackedMode) {
+                // ARCore video has enough temporal coverage for a denser Android
+                // selection without changing the independent iOS capture path.
+                val binCount = maxOf(requestedBinCount, ANDROID_AR_MIN_BIN_COUNT)
                 activeCaptureMode = "ar_tracked"
                 videoCoordinator.pause()
                 videoCoordinator.hidePreview()
@@ -493,6 +496,7 @@ class Giro360CapturePlugin :
     }
 
     companion object {
+        private const val ANDROID_AR_MIN_BIN_COUNT = 60
         private const val METHOD_CHANNEL = "giro360_capture/methods"
         private const val EVENT_CHANNEL = "giro360_capture/events"
         private const val VIEW_TYPE = "giro360_capture/preview"

@@ -1,8 +1,9 @@
 # giro360_capture
 
 Plugin Flutter reutilizável para capturar panoramas cilíndricos no iOS e no
-Android. O SDK acompanha duas voltas, seleciona 30 keyframes de uma única volta
-coerente e executa a costura OpenCV no próprio aparelho.
+Android. O SDK acompanha duas voltas, seleciona keyframes de uma única volta
+coerente e executa a costura OpenCV no próprio aparelho. O fluxo AR do Android
+usa no mínimo 60 setores; o iOS conserva sua configuração independente.
 
 ## Suporte atual
 
@@ -59,6 +60,24 @@ Use este procedimento na orientação em que a captura será realizada:
 5. Afaste mãos, operador e partes do suporte do campo de visão e faça as duas
    voltas lentamente, sempre no mesmo sentido.
 
+## Captura sem tripé
+
+Segure o aparelho de forma que a tela permaneça voltada para você e gire o corpo
+inteiro junto com ele. Não fique parado girando apenas o celular ou tablet: nessa
+situação, a câmera traseira acaba apontando para o operador e o ambiente atrás
+dele deixa de ser registrado. Nenhum método de costura consegue reconstruir uma
+região que ficou oculta durante as duas voltas.
+
+Procure manter a lente no mesmo ponto do espaço. Passos laterais, braços
+esticados e inclinação vertical introduzem paralaxe. No tablet, segure-o perto
+do eixo do corpo e faça passos curtos ao redor desse eixo, mantendo altura e
+inclinação constantes.
+
+Texto curto recomendado para captura manual:
+
+> Mantenha a tela voltada para você e gire o corpo inteiro. Não gire apenas o
+> aparelho. Preserve a altura e a posição da lente durante as duas voltas.
+
 Texto curto recomendado para o helper do aplicativo:
 
 > Posicione a lente sobre o centro do tripé. O tablet pode ficar deslocado. Antes
@@ -79,7 +98,9 @@ entre os setores vizinhos. O panorama só é enviado ao stitcher depois de forma
 uma sequência ordenada completa. O campo `reconstructedBins` do diagnóstico
 identifica quais setores foram recuperados; uma cobertura inferior a 90% é
 rejeitada. O resultado também avisa quando a translação indica que a lente ficou
-fora do eixo recomendado do tripé.
+fora do eixo recomendado do tripé. Esse modo aplica um mínimo Android de 60
+setores, mesmo quando o aplicativo hospedeiro conserva o valor padrão de 30. A
+mudança não afeta a seleção nem a costura do iOS.
 
 ## Diagnóstico geométrico
 
