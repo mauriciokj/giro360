@@ -142,12 +142,46 @@ introduziu cortes geométricos mais evidentes e não substitui a referência.
   e gera os modos `raw`, `yaw_fused` e `fused`.
 - `tool/import_pose_priors.py`: importa as posições cartesianas do ARCore na
   tabela de priors do COLMAP, com incerteza configurável.
+- `tool/extract_sharp_lap.py`: percorre todos os frames do vídeo e seleciona,
+  por ângulo e ordem temporal, os quadros mais nítidos de uma única volta.
+- `tool/depth_anything.swift`: executa o modelo Core ML fixo da Apple para
+  diagnósticos rápidos da faixa central.
+- `tool/depth_anything_v2.py`: executa Depth Anything V2 no quadro retrato
+  completo e salva profundidade relativa, máscara normalizada e prévia.
+- `tool/depth_pair_diagnostics.py`: cruza matches geométricos e profundidade nos
+  seis pares críticos.
+
+## Seleção por nitidez e profundidade
+
+A gravação original contém 994 frames. Em vez de capturar novamente, cada volta
+foi reamostrada em 60 posições, procurando um frame mais nítido perto do ângulo
+alvo sem quebrar a ordem temporal.
+
+| Seleção | Nitidez mediana | Nitidez mínima | Nitidez máxima |
+| --- | ---: | ---: | ---: |
+| Volta 1 original | 54,52 | 11,74 | 554,80 |
+| Volta 1 otimizada | 75,64 | 14,34 | 701,24 |
+| Volta 2 original | 56,79 | 8,57 | 632,81 |
+| Volta 2 otimizada | 81,44 | 10,91 | 813,68 |
+
+Os testes 34 e 35 ficaram mais definidos, mas mantiveram duplicações nos mesmos
+objetos próximos. Isso separa o desfoque de movimento do ghosting geométrico.
+
+Depth Anything V2 Small foi então aplicado aos seis pares críticos. Os maiores
+conflitos relativos apareceram em `10->11` e `21->22`; este último tem pouca
+textura e profundidade pouco confiável por causa da TV escura. O teste foi
+ampliado para os 60 quadros da volta 1 otimizada.
+
+O teste 36 usa uma build experimental que penaliza bordas de profundidade ao
+escolher a coluna da seam. Todos os 60 mapas foram carregados. O custo médio da
+seam passou de 17,56 para 23,52 e a posição média mudou, produzindo diferenças
+em 2,7% dos pixels. O candidato está publicado no Visão360 contra o teste 34.
+Essa versão não está habilitada no SDK normal e não altera o pipeline do iOS.
 
 ## Próximos testes
 
-1. Comparar visualmente `yaw_fused` e `fused` com a linha de base no Visão360.
-2. Aplicar profundidade somente aos seis pares críticos antes de ampliar o
-   custo para toda a sequência.
+1. Avaliar o teste 36 contra o teste 34 no modo divisor e plano esticado.
+2. Implementar seam curva por pixel combinando cor, gradiente e profundidade.
 3. Repetir a matriz no M3ISR para medir separadamente rotação pura e translação.
 
 No momento do teste havia cerca de 8 GB livres. Downloads de datasets e modelos

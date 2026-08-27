@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <iomanip>
 #include <opencv2/calib3d.hpp>
@@ -32,6 +33,10 @@
 
 #ifndef GIRO360_EXPERIMENT_EXPANDED_OVERLAP
 #define GIRO360_EXPERIMENT_EXPANDED_OVERLAP 0
+#endif
+
+#ifndef GIRO360_EXPERIMENT_DEPTH_SEAM
+#define GIRO360_EXPERIMENT_DEPTH_SEAM 0
 #endif
 
 namespace {
@@ -92,6 +97,7 @@ constexpr float kWeightEpsilon = 1e-4F;
 
 struct GuidedPatch {
   cv::Mat patch;
+  cv::Mat depth_edge;
   int center_x = 0;
   int vertical_offset = 0;
   bool valid = false;
@@ -216,6 +222,8 @@ struct GuidedRefinementMetrics {
   int local_mesh_warp_rejected_count = 0;
   double total_local_mesh_warp_reliable_ratio = 0.0;
   double max_local_mesh_warp_displacement = 0.0;
+  bool depth_seam_enabled = false;
+  int depth_map_count = 0;
   bool expanded_overlap_enabled = false;
   int expanded_overlap_source_crop_percent = 46;
   int expanded_overlap_patch_width = 0;
@@ -249,6 +257,36 @@ std::vector<cv::Mat> load_images(const char** image_paths, int image_count) {
   }
 
   return images;
+}
+
+std::vector<cv::Mat> load_experimental_depth_maps(
+    const char** image_paths,
+    int image_count) {
+  std::vector<cv::Mat> depths(static_cast<size_t>(image_count));
+#if GIRO360_EXPERIMENT_DEPTH_SEAM
+  const char* directory = std::getenv("GIRO360_DEPTH_DIRECTORY");
+  if (directory == nullptr || directory[0] == '\0') {
+    return depths;
+  }
+  for (int index = 0; index < image_count; ++index) {
+    const std::string image_path(image_paths[index]);
+    const size_t separator = image_path.find_last_of("/\\");
+    const size_t extension = image_path.find_last_of('.');
+    const size_t name_start = separator == std::string::npos ? 0 : separator + 1;
+    const size_t name_end = extension == std::string::npos ? image_path.size() : extension;
+    const std::string stem = image_path.substr(name_start, name_end - name_start);
+    const std::string depth_path =
+        std::string(directory) + "/" + stem + ".depth.u16.png";
+    cv::Mat depth = cv::imread(depth_path, cv::IMREAD_UNCHANGED);
+    if (depth.empty() || depth.channels() != 1) {
+      continue;
+    }
+    depth.convertTo(depths[static_cast<size_t>(index)], CV_32F, 1.0 / 65535.0);
+  }
+#else
+  (void)image_paths;
+#endif
+  return depths;
 }
 
 std::string stitcher_status_to_string(cv::Stitcher::Status status) {
@@ -770,6 +808,9 @@ std::string format_guided_refinement_metrics(const GuidedRefinementMetrics& metr
               static_cast<double>(metrics.local_mesh_warp_candidate_count))
       << "\nguided_local_mesh_warp_max_displacement_px="
       << metrics.max_local_mesh_warp_displacement
+      << "\nguided_depth_seam_enabled="
+      << (metrics.depth_seam_enabled ? "true" : "false")
+      << "\nguided_depth_map_count=" << metrics.depth_map_count
       << "\nguided_expanded_overlap_enabled="
       << (metrics.expanded_overlap_enabled ? "true" : "false")
       << "\nguided_expanded_overlap_source_crop_percent="
@@ -2072,6 +2113,8 @@ float smooth_step(float edge0, float edge1, float value) {
 double adaptive_seam_column_cost(
     const cv::Mat& previous_gray,
     const cv::Mat& current_gray,
+    const cv::Mat& previous_depth_edge,
+    const cv::Mat& current_depth_edge,
     int column) {
   double cost = 0.0;
   for (int y = 0; y < previous_gray.rows; ++y) {
@@ -2086,6 +2129,17 @@ double adaptive_seam_column_cost(
           current_value - current_gray.at<unsigned char>(y, column - 1));
       cost += static_cast<double>(previous_gradient + current_gradient) * 0.22;
     }
+#if GIRO360_EXPERIMENT_DEPTH_SEAM
+    if (!previous_depth_edge.empty() && !current_depth_edge.empty()) {
+      const float depth_edge =
+          previous_depth_edge.at<float>(y, column) +
+          current_depth_edge.at<float>(y, column);
+      cost += static_cast<double>(depth_edge) * 95.0;
+    }
+#else
+    (void)previous_depth_edge;
+    (void)current_depth_edge;
+#endif
   }
   return cost / static_cast<double>(std::max(1, previous_gray.rows));
 }
@@ -2152,6 +2206,12 @@ bool choose_guided_adaptive_seam(
   cv::Mat current_gray;
   cv::cvtColor(previous.patch(previous_overlap), previous_gray, cv::COLOR_BGR2GRAY);
   cv::cvtColor(current.patch(current_overlap), current_gray, cv::COLOR_BGR2GRAY);
+  const cv::Mat previous_depth_edge = previous.depth_edge.empty()
+      ? cv::Mat()
+      : previous.depth_edge(previous_overlap);
+  const cv::Mat current_depth_edge = current.depth_edge.empty()
+      ? cv::Mat()
+      : current.depth_edge(current_overlap);
 
   const int margin = std::clamp(overlap_width / 8, 4, overlap_width / 3);
   const int first_candidate = margin;
@@ -2173,6 +2233,8 @@ bool choose_guided_adaptive_seam(
       window_cost += adaptive_seam_column_cost(
           previous_gray,
           current_gray,
+          previous_depth_edge,
+          current_depth_edge,
           sample_column);
       samples += 1;
     }
@@ -3168,6 +3230,7 @@ void refine_guided_patch_alignment(
 
 cv::Mat build_guided_cylindrical_fallback(
     const std::vector<cv::Mat>& images,
+    const std::vector<cv::Mat>& depth_maps,
     const double* actual_yaws,
     const double* actual_pitches,
     int guided_fill_mode,
@@ -3251,6 +3314,45 @@ cv::Mat build_guided_cylindrical_fallback(
     cv::Mat patch;
     cv::resize(image(crop_rect), patch, cv::Size(patch_width, band_height), 0, 0, cv::INTER_AREA);
 
+    cv::Mat depth_edge;
+#if GIRO360_EXPERIMENT_DEPTH_SEAM
+    if (static_cast<size_t>(image_index) < depth_maps.size() &&
+        !depth_maps[static_cast<size_t>(image_index)].empty()) {
+      const cv::Mat& source_depth = depth_maps[static_cast<size_t>(image_index)];
+      const int depth_crop_width = std::max(
+          1,
+          static_cast<int>(std::lround(source_depth.cols * source_crop_ratio)));
+      const int depth_crop_x = std::max(0, (source_depth.cols - depth_crop_width) / 2);
+      const cv::Rect depth_crop_rect(
+          depth_crop_x,
+          0,
+          std::min(depth_crop_width, source_depth.cols - depth_crop_x),
+          source_depth.rows);
+      cv::Mat resized_depth;
+      cv::resize(
+          source_depth(depth_crop_rect),
+          resized_depth,
+          cv::Size(patch_width, band_height),
+          0,
+          0,
+          cv::INTER_LINEAR);
+      cv::Mat gradient_x;
+      cv::Mat gradient_y;
+      cv::Sobel(resized_depth, gradient_x, CV_32F, 1, 0, 3);
+      cv::Sobel(resized_depth, gradient_y, CV_32F, 0, 1, 3);
+      cv::magnitude(gradient_x, gradient_y, depth_edge);
+      depth_edge *= 3.0F;
+      cv::threshold(depth_edge, depth_edge, 1.0, 1.0, cv::THRESH_TRUNC);
+      cv::GaussianBlur(depth_edge, depth_edge, cv::Size(5, 5), 0.0);
+      if (refinement_metrics != nullptr) {
+        refinement_metrics->depth_seam_enabled = true;
+        refinement_metrics->depth_map_count += 1;
+      }
+    }
+#else
+    (void)depth_maps;
+#endif
+
     int center_x = (image_index * segment_width) + (segment_width / 2);
     int vertical_offset = 0;
 
@@ -3268,6 +3370,7 @@ cv::Mat build_guided_cylindrical_fallback(
 
     guided_patches[static_cast<size_t>(image_index)] = GuidedPatch{
         patch,
+        depth_edge,
         center_x,
         vertical_offset,
         true,
@@ -3492,6 +3595,8 @@ int run_stitch(
     }
 
     std::vector<cv::Mat> images = load_images(image_paths, image_count);
+    std::vector<cv::Mat> depth_maps =
+        load_experimental_depth_maps(image_paths, image_count);
 
     std::string orb_warning;
     const bool passed_orb_check = quick_orb_overlap_check(images, &orb_warning);
@@ -3508,6 +3613,7 @@ int run_stitch(
       cv::Mat guided_fallback =
           build_guided_cylindrical_fallback(
               images,
+              depth_maps,
               actual_yaws,
               actual_pitches,
               guided_fill_mode,
@@ -3542,6 +3648,7 @@ int run_stitch(
       cv::Mat guided_fallback =
           build_guided_cylindrical_fallback(
               images,
+              depth_maps,
               actual_yaws,
               actual_pitches,
               guided_fill_mode,

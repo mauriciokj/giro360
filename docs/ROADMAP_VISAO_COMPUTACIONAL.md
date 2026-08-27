@@ -144,11 +144,14 @@ Tab sem tripé. O relatório completo está em
 - [x] Executar SfM incremental como linha de base.
 - [x] Executar SfM global e Bundle Adjustment no COLMAP.
 - [x] Comparar poses puramente visuais e fusão limitada com a telemetria ARCore.
-- [ ] Validar visualmente as variantes `yaw_fused` e `fused` no Visão360.
+- [x] Validar visualmente as variantes `yaw_fused` e `fused` no Visão360.
 - [x] Comparar SIFT clássico com SIFT + LightGlue mantendo a mesma captura.
 - [x] Comparar SIFT + LightGlue com ALIKED + LightGlue.
 - [x] Usar as posições ARCore como priors no refinamento global.
-- [ ] Testar seam orientado por profundidade nos pares críticos.
+- [x] Diagnosticar os seis pares críticos com profundidade monocular.
+- [x] Testar seam reto orientado por profundidade nos 60 quadros.
+- [ ] Testar seam curvo por pixel orientado por profundidade.
+- [x] Selecionar quadros mais nítidos dentro da mesma volta e do mesmo ângulo.
 - [ ] Executar os testes controlados A, B e C no M3ISR.
 
 Resultado parcial: 38 dos 60 pares foram melhor explicados por geometria
@@ -169,3 +172,16 @@ O terceiro ciclo adicionou priors cartesianos do ARCore com desvio padrão de
 panorama continuou com ghosting. GraphCut e multibanda tornaram algumas emendas
 mais definidas, porém criaram cortes mais perceptíveis. A próxima hipótese ativa
 é seam orientado por profundidade nos pares críticos.
+
+O quarto ciclo executou Depth Anything V2 sobre a mesma gravação. Os mapas
+completos preservaram a proporção retrato e confirmaram conflitos nas bordas da
+porta, do suporte e de outros objetos próximos. A seleção offline de quadros
+elevou a nitidez mediana da volta 1 de 54,52 para 75,64 e da volta 2 para 81,44,
+mas não removeu o ghosting, reforçando que o limitante é geométrico.
+
+O teste 36 adicionou as bordas de profundidade ao custo da seam reta. Os 60
+mapas foram carregados e 2,7% dos pixels do panorama mudaram em relação ao teste
+34, principalmente nas emendas. A avaliação visual no Visão360 ainda decide se
+esta variante será mantida. Mesmo que melhore, uma seam limitada a uma coluna
+não consegue contornar objetos com formatos irregulares; o próximo experimento
+local será uma seam curva por pixel antes de avançar para reconstrução densa.
