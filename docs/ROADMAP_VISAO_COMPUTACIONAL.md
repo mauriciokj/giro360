@@ -130,3 +130,29 @@ A primeira implementação registra `cameraCalibration` e `loopClosure` em
 Esta fase é diagnóstica. Ela não altera o panorama final. Os resultados vão
 orientar se o próximo passo deve ser recalibração, melhoria do matching,
 mudança do modelo geométrico ou tratamento de seam.
+
+## Progresso da bateria Android sem tripé
+
+Sessão analisada: 60 quadros selecionados de duas voltas, capturados no Galaxy
+Tab sem tripé. O relatório completo está em
+[`EXPERIMENTO_GEOMETRIA_COLMAP_2026-08-26.md`](EXPERIMENTO_GEOMETRIA_COLMAP_2026-08-26.md).
+
+- [x] Corrigir os intrínsecos do ARCore para a orientação retrato dos JPEGs.
+- [x] Comparar ORB e SIFT em todos os pares consecutivos.
+- [x] Comparar RANSAC e USAC MAGSAC.
+- [x] Medir homografia, matriz fundamental e matriz essencial.
+- [x] Executar SfM incremental como linha de base.
+- [x] Executar SfM global e Bundle Adjustment no COLMAP.
+- [x] Comparar poses puramente visuais e fusão limitada com a telemetria ARCore.
+- [ ] Validar visualmente as variantes `yaw_fused` e `fused` no Visão360.
+- [ ] Comparar SIFT com ALIKED/LightGlue mantendo a mesma captura.
+- [ ] Usar as poses ARCore como priors no mapeamento global.
+- [ ] Testar seam orientado por profundidade nos pares críticos.
+- [ ] Executar os testes controlados A, B e C no M3ISR.
+
+Resultado parcial: 38 dos 60 pares foram melhor explicados por geometria
+epipolar no melhor teste SIFT + USAC. Uma única homografia não representa bem
+a maior parte desta captura com translação. O SfM global registrou os 60 quadros
+com erro médio de reprojeção de 0,943 px, mas as poses visuais cruas ainda
+contêm ambiguidades. Portanto, o próximo ganho provável está em fusão de poses,
+matching mais robusto ou profundidade, e não apenas em trocar o blender.
