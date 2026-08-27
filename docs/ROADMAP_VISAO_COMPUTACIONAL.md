@@ -147,7 +147,7 @@ Tab sem tripé. O relatório completo está em
 - [ ] Validar visualmente as variantes `yaw_fused` e `fused` no Visão360.
 - [x] Comparar SIFT clássico com SIFT + LightGlue mantendo a mesma captura.
 - [x] Comparar SIFT + LightGlue com ALIKED + LightGlue.
-- [ ] Usar as poses ARCore como priors no mapeamento global.
+- [x] Usar as posições ARCore como priors no refinamento global.
 - [ ] Testar seam orientado por profundidade nos pares críticos.
 - [ ] Executar os testes controlados A, B e C no M3ISR.
 
@@ -163,3 +163,9 @@ reduziram as ambiguidades das poses e também registraram 60/60 quadros. ALIKED
 produziu a trajetória mais regular, mas nenhuma variante eliminou visualmente os
 fantasmas provocados por objetos próximos. O matching moderno melhora a entrada
 do SfM, mas não substitui um modelo que trate paralaxe.
+
+O terceiro ciclo adicionou priors cartesianos do ARCore com desvio padrão de
+0,10 m. O maior salto relativo da trajetória caiu de 3,83 para 0,071, mas o
+panorama continuou com ghosting. GraphCut e multibanda tornaram algumas emendas
+mais definidas, porém criaram cortes mais perceptíveis. A próxima hipótese ativa
+é seam orientado por profundidade nos pares críticos.

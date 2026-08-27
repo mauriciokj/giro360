@@ -115,20 +115,40 @@ cadeira, nos monitores e em outros objetos próximos. Elas foram publicadas como
 testes 27 a 30 no Visão360 para avaliação detalhada. Até essa avaliação, a linha
 de base continua sendo a referência visual.
 
+## Priors ARCore e GraphCut
+
+As 60 posições do `cameraTransform` do ARCore foram importadas como priors
+cartesianos no COLMAP com desvio padrão de 0,10 m. O refinamento preservou os 60
+quadros e produziu:
+
+- 2743 pontos 3D e 15967 observações;
+- trilha média de 5,821;
+- erro médio de reprojeção de 1,231 px;
+- RMSE de yaw de 3,10 graus e erro máximo de 7,58 graus;
+- RMSE de pitch cru de 1,06 grau;
+- passo relativo mediano de 0,008 e máximo de 0,071.
+
+O prior removeu os saltos da trajetória, mas não eliminou os fantasmas do
+panorama. A versão `fused` foi publicada como teste 31. Em seguida, a mesma
+timeline foi processada pelo motor GraphCut/multibanda: GraphCut foi aplicado em
+40 emendas e multibanda em 5. O teste 32 reduziu algumas misturas suaves, mas
+introduziu cortes geométricos mais evidentes e não substitui a referência.
+
 ## Ferramentas reproduzíveis
 
 - `tool/benchmark_geometry.py`: executa a matriz de features, estimadores e
   modelos, exportando JSON, CSV e visualizações dos piores pares.
 - `tool/colmap_timeline.py`: converte rotações globais do COLMAP para a timeline
   e gera os modos `raw`, `yaw_fused` e `fused`.
+- `tool/import_pose_priors.py`: importa as posições cartesianas do ARCore na
+  tabela de priors do COLMAP, com incerteza configurável.
 
 ## Próximos testes
 
 1. Comparar visualmente `yaw_fused` e `fused` com a linha de base no Visão360.
-2. Fornecer poses ARCore como priors para reduzir ambiguidades do SfM global.
-3. Aplicar profundidade somente aos seis pares críticos antes de ampliar o
+2. Aplicar profundidade somente aos seis pares críticos antes de ampliar o
    custo para toda a sequência.
-4. Repetir a matriz no M3ISR para medir separadamente rotação pura e translação.
+3. Repetir a matriz no M3ISR para medir separadamente rotação pura e translação.
 
 No momento do teste havia cerca de 8 GB livres. Downloads de datasets e modelos
 grandes ficam adiados até haver espaço suficiente, mas os testes locais de
