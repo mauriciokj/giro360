@@ -268,6 +268,31 @@ menor erro angular; a nitidez desempata seleções equivalentes. Somente os 30
 frames finais são extraídos novamente na resolução original e enviados ao
 stitcher.
 
+## Matriz de testes offline
+
+Uma única sessão que contenha `giro360_capture.mp4` e
+`giro360_video_timeline.json` pode ser reprocessada quantas vezes forem
+necessárias, sem repetir a captura. O executor abaixo preserva o vídeo original,
+extrai 30, 45 e 60 quadros de cada volta e gera uma matriz focada com 18
+panoramas. Nas sequências de 60 quadros ele compara todos os modos de alinhamento,
+o preenchimento lateral e, quando informado, o motor GraphCut/multibanda.
+
+```bash
+flutter pub get
+
+"$(dirname "$(which flutter)")/dart" run tool/run_panorama_matrix.dart \
+  --timeline /caminho/da/sessao/giro360_video_timeline.json \
+  --output /caminho/da/sessao/matrix \
+  --library /caminho/libgiro360_stitcher.dylib \
+  --graphcut-library /caminho/libgiro360_stitcher_graphcut.dylib
+```
+
+Cada panorama recebe um nome que identifica volta, número de quadros,
+alinhamento, preenchimento e motor. O diretório também contém os diagnósticos
+`*_status.txt` e `matrix_manifest.json`, com duração, resultado e caminho de cada
+execução. Use `--exhaustive true` para combinar os cinco alinhamentos com todas
+as quantidades de quadros; essa opção demora mais.
+
 ## Arquivos gerados
 
 Ambas as plataformas geram:
