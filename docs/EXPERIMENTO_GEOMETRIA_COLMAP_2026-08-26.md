@@ -76,6 +76,45 @@ A variante `fused` é a melhor das opções COLMAP nas métricas médias, porém
 pior custo aumentou. Ela ainda precisa vencer a comparação visual antes de ser
 promovida para o SDK.
 
+## SIFT e ALIKED com LightGlue
+
+Para manter o teste viável em CPU, LightGlue foi aplicado a 180 pares: os três
+vizinhos de cada quadro e os pares de fechamento da volta. O primeiro ensaio
+exaustivo foi interrompido porque crescia quadraticamente e pressionava a
+memória do computador sem acrescentar pares relevantes ao vídeo ordenado.
+
+| Reconstrução global | Quadros | Pontos 3D | Observações | Trilha média | Erro de reprojeção |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| SIFT clássico exaustivo | 60 | 2169 | 10658 | 4,914 | 0,943 px |
+| SIFT + LightGlue sequencial | 60 | 3373 | 18304 | 5,427 | 1,064 px |
+| ALIKED + LightGlue sequencial | 60 | 3023 | 17276 | 5,715 | 1,169 px |
+
+SIFT + LightGlue produziu em média 451,6 matches e 438,5 inliers nos 180
+pares. ALIKED + LightGlue produziu 433,7 matches e 430,5 inliers. O ALIKED
+extraiu em média 947 pontos por imagem, variando de 105 em paredes lisas a 2048
+em regiões texturizadas.
+
+| Pose global | RMSE yaw | Erro máximo yaw | RMSE pitch cru | Maior salto relativo |
+| --- | ---: | ---: | ---: | ---: |
+| SIFT clássico | 3,93 graus | 11,12 graus | 3,13 graus | 128,00 |
+| SIFT + LightGlue | 3,13 graus | 6,45 graus | 1,14 graus | 19,78 |
+| ALIKED + LightGlue | 3,03 graus | 6,77 graus | 1,14 graus | 3,83 |
+
+Os matchers modernos reduziram bastante as ambiguidades das poses. ALIKED
+produziu a trajetória mais regular, embora com erro de reprojeção local maior.
+
+| Panorama | Emendas fracas | Custo médio | Pior custo |
+| --- | ---: | ---: | ---: |
+| SIFT + LightGlue yaw_fused | 10 | 17,64 | 59,32 |
+| SIFT + LightGlue fused | 9 | 17,89 | 58,80 |
+| ALIKED + LightGlue yaw_fused | 10 | 17,81 | 59,48 |
+| ALIKED + LightGlue fused | 9 | 17,91 | 59,37 |
+
+Na inspeção ampla, nenhuma dessas quatro variantes removeu os fantasmas na
+cadeira, nos monitores e em outros objetos próximos. Elas foram publicadas como
+testes 27 a 30 no Visão360 para avaliação detalhada. Até essa avaliação, a linha
+de base continua sendo a referência visual.
+
 ## Ferramentas reproduzíveis
 
 - `tool/benchmark_geometry.py`: executa a matriz de features, estimadores e
@@ -86,11 +125,10 @@ promovida para o SDK.
 ## Próximos testes
 
 1. Comparar visualmente `yaw_fused` e `fused` com a linha de base no Visão360.
-2. Executar ALIKED/LightGlue no COLMAP sobre os mesmos 60 quadros.
-3. Fornecer poses ARCore como priors para reduzir ambiguidades do SfM global.
-4. Aplicar profundidade somente aos seis pares críticos antes de ampliar o
+2. Fornecer poses ARCore como priors para reduzir ambiguidades do SfM global.
+3. Aplicar profundidade somente aos seis pares críticos antes de ampliar o
    custo para toda a sequência.
-5. Repetir a matriz no M3ISR para medir separadamente rotação pura e translação.
+4. Repetir a matriz no M3ISR para medir separadamente rotação pura e translação.
 
 No momento do teste havia cerca de 8 GB livres. Downloads de datasets e modelos
 grandes ficam adiados até haver espaço suficiente, mas os testes locais de

@@ -145,7 +145,8 @@ Tab sem tripé. O relatório completo está em
 - [x] Executar SfM global e Bundle Adjustment no COLMAP.
 - [x] Comparar poses puramente visuais e fusão limitada com a telemetria ARCore.
 - [ ] Validar visualmente as variantes `yaw_fused` e `fused` no Visão360.
-- [ ] Comparar SIFT com ALIKED/LightGlue mantendo a mesma captura.
+- [x] Comparar SIFT clássico com SIFT + LightGlue mantendo a mesma captura.
+- [x] Comparar SIFT + LightGlue com ALIKED + LightGlue.
 - [ ] Usar as poses ARCore como priors no mapeamento global.
 - [ ] Testar seam orientado por profundidade nos pares críticos.
 - [ ] Executar os testes controlados A, B e C no M3ISR.
@@ -156,3 +157,9 @@ a maior parte desta captura com translação. O SfM global registrou os 60 quadr
 com erro médio de reprojeção de 0,943 px, mas as poses visuais cruas ainda
 contêm ambiguidades. Portanto, o próximo ganho provável está em fusão de poses,
 matching mais robusto ou profundidade, e não apenas em trocar o blender.
+
+O segundo ciclo confirmou essa direção. SIFT + LightGlue e ALIKED + LightGlue
+reduziram as ambiguidades das poses e também registraram 60/60 quadros. ALIKED
+produziu a trajetória mais regular, mas nenhuma variante eliminou visualmente os
+fantasmas provocados por objetos próximos. O matching moderno melhora a entrada
+do SfM, mas não substitui um modelo que trate paralaxe.
