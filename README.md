@@ -78,6 +78,21 @@ Texto curto recomendado para captura manual:
 > Mantenha a tela voltada para você e gire o corpo inteiro. Não gire apenas o
 > aparelho. Preserve a altura e a posição da lente durante as duas voltas.
 
+Durante o modo Android `arTracked`, o status também informa a velocidade de
+rotação suavizada. A faixa ideal fica entre `0,17` e `0,28 rad/s`, cerca de 10 a
+16 graus por segundo ou 23 a 36 segundos por volta:
+
+```dart
+final speed = status.rotationSpeed;
+final degreesPerSecond = status.currentAngularSpeedDegrees;
+
+// pending, tooSlow, ideal ou tooFast
+print('$speed: ${degreesPerSecond.toStringAsFixed(0)} graus/s');
+```
+
+O app de exemplo apresenta esse valor em tempo real com estados coloridos. Os
+alertas de translação da lente e sentido incorreto continuam tendo prioridade.
+
 Texto curto recomendado para o helper do aplicativo:
 
 > Posicione a lente sobre o centro do tripé. O tablet pode ficar deslocado. Antes

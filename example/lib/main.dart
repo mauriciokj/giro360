@@ -157,7 +157,9 @@ class _CaptureExampleScreenState extends State<CaptureExampleScreen> {
         ),
       );
     } catch (error) {
-      if (mounted) setState(() => _error = 'Não foi possível compartilhar: $error');
+      if (mounted) {
+        setState(() => _error = 'Não foi possível compartilhar: $error');
+      }
     } finally {
       if (mounted) setState(() => _sharing = false);
     }
@@ -224,7 +226,9 @@ class _CaptureExampleScreenState extends State<CaptureExampleScreen> {
                           onPressed: _sharing ? null : _sharePanorama,
                           icon: const Icon(Icons.ios_share),
                           label: Text(
-                            _sharing ? 'Abrindo compartilhamento' : 'Compartilhar imagem',
+                            _sharing
+                                ? 'Abrindo compartilhamento'
+                                : 'Compartilhar imagem',
                           ),
                         ),
                       ),
@@ -390,6 +394,14 @@ class CaptureProgressPanel extends StatelessWidget {
                 _ => 'frames diretos',
               }}',
             ),
+            if (stage == Giro360CaptureStage.capturing &&
+                value.rotationSpeed != Giro360RotationSpeed.pending) ...[
+              const SizedBox(height: 8),
+              RotationSpeedIndicator(
+                speed: value.rotationSpeed,
+                degreesPerSecond: value.currentAngularSpeedDegrees,
+              ),
+            ],
             if (value.captureSource == 'importedVideo' &&
                 value.visualMotionSampleCount > 0) ...[
               const SizedBox(height: 4),
@@ -402,6 +414,76 @@ class CaptureProgressPanel extends StatelessWidget {
             ],
           ],
         ],
+      ),
+    );
+  }
+}
+
+class RotationSpeedIndicator extends StatelessWidget {
+  const RotationSpeedIndicator({
+    required this.speed,
+    required this.degreesPerSecond,
+    super.key,
+  });
+
+  final Giro360RotationSpeed speed;
+  final double degreesPerSecond;
+
+  @override
+  Widget build(BuildContext context) {
+    final (label, foreground, background) = switch (speed) {
+      Giro360RotationSpeed.tooSlow => (
+          'Muito devagar',
+          const Color(0xffffdf7e),
+          const Color(0x332b2510),
+        ),
+      Giro360RotationSpeed.ideal => (
+          'Velocidade ideal',
+          const Color(0xff45d6a8),
+          const Color(0x3310372c),
+        ),
+      Giro360RotationSpeed.tooFast => (
+          'Muito rápido',
+          const Color(0xffff9b8f),
+          const Color(0x333b1713),
+        ),
+      Giro360RotationSpeed.pending => (
+          'Comece a girar',
+          const Color(0xffd1dbd9),
+          const Color(0x33212726),
+        ),
+    };
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        width: 230,
+        height: 34,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: background,
+          border: Border.all(color: foreground),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.speed, color: foreground, size: 18),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style:
+                    TextStyle(color: foreground, fontWeight: FontWeight.w700),
+              ),
+            ),
+            Text(
+              '${degreesPerSecond.toStringAsFixed(0)}°/s',
+              style: TextStyle(color: foreground),
+            ),
+          ],
+        ),
       ),
     );
   }

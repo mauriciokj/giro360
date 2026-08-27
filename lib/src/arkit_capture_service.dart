@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:io';
 
 import 'package:flutter/services.dart';
@@ -168,6 +169,7 @@ class Giro360CaptureStatus {
     required this.currentPitchDegrees,
     required this.currentRollDegrees,
     required this.currentAngularSpeed,
+    required this.rotationSpeed,
     required this.currentTranslationMeters,
     required this.maxTranslationMeters,
     required this.processedFrameCount,
@@ -212,6 +214,12 @@ class Giro360CaptureStatus {
       currentPitchDegrees: _double(map, 'currentPitchDegrees'),
       currentRollDegrees: _double(map, 'currentRollDegrees'),
       currentAngularSpeed: _double(map, 'currentAngularSpeed'),
+      rotationSpeed: switch (_string(map, 'rotationSpeed')) {
+        'too_slow' => Giro360RotationSpeed.tooSlow,
+        'ideal' => Giro360RotationSpeed.ideal,
+        'too_fast' => Giro360RotationSpeed.tooFast,
+        _ => Giro360RotationSpeed.pending,
+      },
       currentTranslationMeters: _double(map, 'currentTranslationMeters'),
       maxTranslationMeters: _double(map, 'maxTranslationMeters'),
       processedFrameCount: _int(map, 'processedFrameCount'),
@@ -271,6 +279,7 @@ class Giro360CaptureStatus {
   final double currentPitchDegrees;
   final double currentRollDegrees;
   final double currentAngularSpeed;
+  final Giro360RotationSpeed rotationSpeed;
   final double currentTranslationMeters;
   final double maxTranslationMeters;
   final int processedFrameCount;
@@ -292,12 +301,21 @@ class Giro360CaptureStatus {
   final Giro360CameraCalibrationDiagnostics cameraCalibration;
   final Giro360LoopClosureDiagnostics loopClosure;
 
+  double get currentAngularSpeedDegrees => currentAngularSpeed * 180 / math.pi;
+
   int get activeLap {
     if (complete) {
       return requiredLaps;
     }
     return (completedLaps + 1).clamp(1, requiredLaps);
   }
+}
+
+enum Giro360RotationSpeed {
+  pending,
+  tooSlow,
+  ideal,
+  tooFast,
 }
 
 class Giro360CameraCalibrationDiagnostics {

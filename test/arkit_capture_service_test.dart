@@ -15,6 +15,8 @@ void main() {
     expect(status.loopClosure.poseReliable, isTrue);
     expect(status.loopClosure.visualInlierCount, 86);
     expect(status.frames.single.cameraImageWidth, 1920);
+    expect(status.rotationSpeed, Giro360RotationSpeed.ideal);
+    expect(status.currentAngularSpeedDegrees, closeTo(11.46, 0.01));
   });
 
   test('keeps the validated video refinement native contract stable', () {
@@ -103,6 +105,8 @@ Map<Object?, Object?> _statusMap({required bool complete}) => {
       'videoPath': '/tmp/giro360_capture.mp4',
       'videoTimelinePath': '/tmp/giro360_video_timeline.json',
       'captureSource': 'video',
+      'currentAngularSpeed': 0.2,
+      'rotationSpeed': 'ideal',
       'cameraCalibration': <Object?, Object?>{
         'available': true,
         'stable': true,

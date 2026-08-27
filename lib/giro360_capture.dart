@@ -6,6 +6,7 @@ export 'src/arkit_capture_service.dart'
         Giro360CapturePreview,
         Giro360CaptureStatus,
         Giro360NativeCaptureService,
+        Giro360RotationSpeed,
         Giro360VideoFrame;
 export 'src/capture_controller.dart';
 export 'src/capture_support.dart';

@@ -536,7 +536,12 @@ internal class Giro360CaptureCoordinator(
             lastFrameTimestamp = frame.timestamp
             val deltaTime = max(0.001, (frame.timestamp - previousTimestamp) / 1_000_000_000.0)
             val yawDelta = normalizedAngle(yaw - previousYaw)
-            currentAngularSpeed = abs(yawDelta) / deltaTime
+            val measuredAngularSpeed = abs(yawDelta) / deltaTime
+            currentAngularSpeed = if (currentAngularSpeed == 0.0) {
+                measuredAngularSpeed
+            } else {
+                currentAngularSpeed * 0.85 + measuredAngularSpeed * 0.15
+            }
             if (abs(yawDelta) > 0.45) return
             unwrappedYaw += yawDelta
 
@@ -569,13 +574,18 @@ internal class Giro360CaptureCoordinator(
                 }
 
                 movingWrongDirection -> "Continue no mesmo sentido da volta."
-                camera.trackingState == TrackingState.TRACKING ->
-                    "Gire o corpo junto com o tablet, mantendo a lente no mesmo ponto."
-
-                else -> {
+                camera.trackingState != TrackingState.TRACKING -> {
                     rejectedTrackingFrameCount += 1
                     "Rastreamento limitado. Diminua a velocidade e aponte para detalhes."
                 }
+
+                rotationSpeedLabelLocked() == "too_fast" ->
+                    "Muito rápido. Gire mais devagar para evitar imagens tremidas."
+
+                rotationSpeedLabelLocked() == "too_slow" ->
+                    "Muito devagar. Acelere um pouco e mantenha o movimento contínuo."
+
+                else -> "Velocidade ideal. Mantenha o ritmo e a lente no mesmo ponto."
             }
 
             val totalProgress = requiredLaps * TWO_PI
@@ -1396,6 +1406,13 @@ internal class Giro360CaptureCoordinator(
             averageCenterError * 50 - averageAngularSpeed * 3
     }
 
+    private fun rotationSpeedLabelLocked(): String = when {
+        !running || direction == 0.0 -> "pending"
+        currentAngularSpeed < MIN_IDEAL_ANGULAR_SPEED_RADIANS_PER_SECOND -> "too_slow"
+        currentAngularSpeed > MAX_IDEAL_ANGULAR_SPEED_RADIANS_PER_SECOND -> "too_fast"
+        else -> "ideal"
+    }
+
     private fun statusSnapshotLocked(): Map<String, Any> {
         val totalRadians = requiredLaps * TWO_PI
         val progress = if (totalRadians > 0) min(1.0, maxProgress / totalRadians) else 0.0
@@ -1434,6 +1451,7 @@ internal class Giro360CaptureCoordinator(
             "currentPitchDegrees" to currentPitch * 180 / PI,
             "currentRollDegrees" to currentRoll * 180 / PI,
             "currentAngularSpeed" to currentAngularSpeed,
+            "rotationSpeed" to rotationSpeedLabelLocked(),
             "currentTranslationMeters" to currentTranslationMeters,
             "maxTranslationMeters" to maxTranslationMeters,
             "processedFrameCount" to processedFrameCount,
@@ -1656,6 +1674,8 @@ internal class Giro360CaptureCoordinator(
         private const val VIDEO_TIMESTAMP_TOLERANCE_SECONDS = 0.25
         private const val AXIS_TRANSLATION_WARNING_METERS = 0.08
         private const val AXIS_MAX_TRANSLATION_WARNING_METERS = 0.12
+        private const val MIN_IDEAL_ANGULAR_SPEED_RADIANS_PER_SECOND = 0.17
+        private const val MAX_IDEAL_ANGULAR_SPEED_RADIANS_PER_SECOND = 0.28
         private const val CALIBRATION_MAX_VARIATION_PERCENT = 0.5
         private const val CALIBRATION_MAX_PRINCIPAL_DRIFT_PERCENT = 0.5
         private const val LOOP_CLOSURE_MEAN_TRANSLATION_METERS = 0.05
