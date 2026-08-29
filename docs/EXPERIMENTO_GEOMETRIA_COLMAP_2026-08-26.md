@@ -178,11 +178,26 @@ seam passou de 17,56 para 23,52 e a posição média mudou, produzindo diferenç
 em 2,7% dos pixels. O candidato está publicado no Visão360 contra o teste 34.
 Essa versão não está habilitada no SDK normal e não altera o pipeline do iOS.
 
+Os testes 37 e 38 trocaram a coluna reta por uma seam dinâmica por linha,
+calculada com cor, gradiente e bordas de profundidade. O teste 37 permitiu um
+caminho amplo e alterou 20,29% dos pixels; o teste 38 limitou o caminho a um
+corredor de 52 px e reduziu o blend para 18 px, mas ainda alterou 14,14% dos
+pixels. O percentil 99 das bordas horizontais subiu de 18 no teste 36 para 21
+no teste 38. Visualmente, a seam passou a contornar detalhes, mas criou cortes
+serrilhados na estante, TV e cadeira. O teste 34 continua sendo a melhor
+referência.
+
+O resultado é útil porque elimina uma hipótese: escolher melhor onde cortar
+não corrige duas projeções que discordam por paralaxe. A correção precisa agir
+na geometria local antes da composição. A seam dinâmica permanece disponível
+somente por flag de compilação experimental e não altera o SDK normal.
+
 ## Próximos testes
 
-1. Avaliar o teste 36 contra o teste 34 no modo divisor e plano esticado.
-2. Implementar seam curva por pixel combinando cor, gradiente e profundidade.
-3. Repetir a matriz no M3ISR para medir separadamente rotação pura e translação.
+1. Implementar warping local orientado por profundidade antes da composição.
+2. Comparar uma transformação por camadas de profundidade com uma malha local.
+3. Manter o teste 34 como referência visual e quantitativa.
+4. Repetir a matriz no M3ISR para medir separadamente rotação pura e translação.
 
 No momento do teste havia cerca de 8 GB livres. Downloads de datasets e modelos
 grandes ficam adiados até haver espaço suficiente, mas os testes locais de

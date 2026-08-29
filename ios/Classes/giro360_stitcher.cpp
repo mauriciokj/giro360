@@ -15,6 +15,7 @@
 #include <opencv2/stitching/detail/seam_finders.hpp>
 #include <opencv2/video/tracking.hpp>
 #include <limits>
+#include <numeric>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -37,6 +38,10 @@
 
 #ifndef GIRO360_EXPERIMENT_DEPTH_SEAM
 #define GIRO360_EXPERIMENT_DEPTH_SEAM 0
+#endif
+
+#ifndef GIRO360_EXPERIMENT_DEPTH_DYNAMIC_SEAM
+#define GIRO360_EXPERIMENT_DEPTH_DYNAMIC_SEAM 0
 #endif
 
 namespace {
@@ -90,6 +95,11 @@ constexpr double kGuidedAffineMaxScale = 1.02;
 constexpr double kGuidedAffineMaxRmsErrorPixels = 3.0;
 constexpr double kGuidedAffineRelaxation = 0.32;
 constexpr double kGuidedAffinePrior = 0.018;
+constexpr int kGuidedDynamicSeamMaxStep = 3;
+constexpr int kGuidedDynamicSeamCorridorRadius = 52;
+constexpr int kGuidedDynamicSeamBlendWidth = 18;
+constexpr float kGuidedDynamicSeamSmoothness = 3.0F;
+constexpr float kGuidedDynamicSeamCenterPrior = 0.08F;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kTwoPi = kPi * 2.0;
 constexpr double kGuidedTrustTelemetryMaxPitchRadians = kPi / 144.0;
@@ -105,6 +115,8 @@ struct GuidedPatch {
   int right_seam_x = -1;
   int left_seam_blend_width = 0;
   int right_seam_blend_width = 0;
+  std::vector<int> left_seam_path;
+  std::vector<int> right_seam_path;
 };
 
 struct GuidedExposureStats {
@@ -224,6 +236,10 @@ struct GuidedRefinementMetrics {
   double max_local_mesh_warp_displacement = 0.0;
   bool depth_seam_enabled = false;
   int depth_map_count = 0;
+  bool dynamic_seam_enabled = false;
+  int dynamic_seam_count = 0;
+  double total_dynamic_seam_range = 0.0;
+  int max_dynamic_seam_range = 0;
   bool expanded_overlap_enabled = false;
   int expanded_overlap_source_crop_percent = 46;
   int expanded_overlap_patch_width = 0;
@@ -811,6 +827,16 @@ std::string format_guided_refinement_metrics(const GuidedRefinementMetrics& metr
       << "\nguided_depth_seam_enabled="
       << (metrics.depth_seam_enabled ? "true" : "false")
       << "\nguided_depth_map_count=" << metrics.depth_map_count
+      << "\nguided_dynamic_seam_enabled="
+      << (metrics.dynamic_seam_enabled ? "true" : "false")
+      << "\nguided_dynamic_seam_count=" << metrics.dynamic_seam_count
+      << "\nguided_dynamic_seam_avg_range_px="
+      << (metrics.dynamic_seam_count == 0
+          ? 0.0
+          : metrics.total_dynamic_seam_range /
+              static_cast<double>(metrics.dynamic_seam_count))
+      << "\nguided_dynamic_seam_max_range_px="
+      << metrics.max_dynamic_seam_range
       << "\nguided_expanded_overlap_enabled="
       << (metrics.expanded_overlap_enabled ? "true" : "false")
       << "\nguided_expanded_overlap_source_crop_percent="
@@ -2250,6 +2276,184 @@ bool choose_guided_adaptive_seam(
   return true;
 }
 
+bool choose_guided_dynamic_seam(
+    const GuidedPatch& previous,
+    const GuidedPatch& current,
+    int panorama_width,
+    int patch_width,
+    int anchor_seam_x,
+    std::vector<int>* previous_path,
+    std::vector<int>* current_path,
+    int* seam_x,
+    double* seam_cost,
+    int* seam_range) {
+  if (previous_path == nullptr ||
+      current_path == nullptr ||
+      seam_x == nullptr ||
+      seam_cost == nullptr ||
+      seam_range == nullptr ||
+      !previous.valid ||
+      !current.valid ||
+      previous.patch.empty() ||
+      current.patch.empty() ||
+      previous.depth_edge.empty() ||
+      current.depth_edge.empty()) {
+    return false;
+  }
+
+  const int previous_start_x = previous.center_x - (patch_width / 2);
+  const int current_start_x = current.center_x - (patch_width / 2);
+  int expected_delta_x = current_start_x - previous_start_x;
+  while (expected_delta_x <= 0) {
+    expected_delta_x += panorama_width;
+  }
+  while (expected_delta_x > panorama_width / 2) {
+    expected_delta_x -= panorama_width;
+  }
+  if (expected_delta_x <= 0 || expected_delta_x >= patch_width) {
+    return false;
+  }
+
+  const int overlap_width = patch_width - expected_delta_x;
+  if (overlap_width < kGuidedAdaptiveSeamMinOverlapPixels) {
+    return false;
+  }
+  const int vertical_delta = previous.vertical_offset - current.vertical_offset;
+  const int previous_top = std::max(0, -vertical_delta);
+  const int current_top = previous_top + vertical_delta;
+  const int common_height = std::min(
+      previous.patch.rows - previous_top,
+      current.patch.rows - current_top);
+  if (current_top < 0 || previous_top < 0 || common_height < 32) {
+    return false;
+  }
+
+  const cv::Rect previous_overlap(
+      expected_delta_x,
+      previous_top,
+      overlap_width,
+      common_height);
+  const cv::Rect current_overlap(0, current_top, overlap_width, common_height);
+  cv::Mat previous_gray;
+  cv::Mat current_gray;
+  cv::cvtColor(previous.patch(previous_overlap), previous_gray, cv::COLOR_BGR2GRAY);
+  cv::cvtColor(current.patch(current_overlap), current_gray, cv::COLOR_BGR2GRAY);
+
+  cv::Mat difference;
+  cv::absdiff(previous_gray, current_gray, difference);
+  difference.convertTo(difference, CV_32F);
+  cv::Mat previous_gradient_x;
+  cv::Mat previous_gradient_y;
+  cv::Mat current_gradient_x;
+  cv::Mat current_gradient_y;
+  cv::Sobel(previous_gray, previous_gradient_x, CV_32F, 1, 0, 3);
+  cv::Sobel(previous_gray, previous_gradient_y, CV_32F, 0, 1, 3);
+  cv::Sobel(current_gray, current_gradient_x, CV_32F, 1, 0, 3);
+  cv::Sobel(current_gray, current_gradient_y, CV_32F, 0, 1, 3);
+  cv::Mat previous_gradient;
+  cv::Mat current_gradient;
+  cv::magnitude(previous_gradient_x, previous_gradient_y, previous_gradient);
+  cv::magnitude(current_gradient_x, current_gradient_y, current_gradient);
+
+  cv::Mat cost = difference + (previous_gradient + current_gradient) * 0.10F;
+  const cv::Mat previous_depth = previous.depth_edge(previous_overlap);
+  const cv::Mat current_depth = current.depth_edge(current_overlap);
+  cost += (previous_depth + current_depth) * 95.0F;
+  cv::GaussianBlur(cost, cost, cv::Size(3, 3), 0.0);
+
+  const int margin = std::clamp(overlap_width / 8, 4, overlap_width / 3);
+  const int first_candidate = std::max(
+      margin,
+      anchor_seam_x - kGuidedDynamicSeamCorridorRadius);
+  const int last_candidate = std::min(
+      overlap_width - margin - 1,
+      anchor_seam_x + kGuidedDynamicSeamCorridorRadius);
+  if (first_candidate >= last_candidate) {
+    return false;
+  }
+
+  const float infinity = std::numeric_limits<float>::max() / 8.0F;
+  cv::Mat accumulated(common_height, overlap_width, CV_32F, cv::Scalar(infinity));
+  cv::Mat predecessor(common_height, overlap_width, CV_16SC1, cv::Scalar(-1));
+  const float center = static_cast<float>(anchor_seam_x);
+  for (int x = first_candidate; x <= last_candidate; ++x) {
+    accumulated.at<float>(0, x) =
+        cost.at<float>(0, x) +
+        std::abs(static_cast<float>(x) - center) * kGuidedDynamicSeamCenterPrior;
+  }
+
+  for (int y = 1; y < common_height; ++y) {
+    for (int x = first_candidate; x <= last_candidate; ++x) {
+      float best = infinity;
+      int best_x = x;
+      const int previous_first = std::max(first_candidate, x - kGuidedDynamicSeamMaxStep);
+      const int previous_last = std::min(last_candidate, x + kGuidedDynamicSeamMaxStep);
+      for (int candidate_x = previous_first; candidate_x <= previous_last; ++candidate_x) {
+        const float candidate = accumulated.at<float>(y - 1, candidate_x) +
+            std::abs(candidate_x - x) * kGuidedDynamicSeamSmoothness;
+        if (candidate < best) {
+          best = candidate;
+          best_x = candidate_x;
+        }
+      }
+      accumulated.at<float>(y, x) = best + cost.at<float>(y, x) +
+          std::abs(static_cast<float>(x) - center) * kGuidedDynamicSeamCenterPrior;
+      predecessor.at<short>(y, x) = static_cast<short>(best_x);
+    }
+  }
+
+  int best_x = first_candidate;
+  float best_total = accumulated.at<float>(common_height - 1, best_x);
+  for (int x = first_candidate + 1; x <= last_candidate; ++x) {
+    const float candidate = accumulated.at<float>(common_height - 1, x);
+    if (candidate < best_total) {
+      best_total = candidate;
+      best_x = x;
+    }
+  }
+
+  std::vector<int> overlap_path(static_cast<size_t>(common_height), best_x);
+  for (int y = common_height - 1; y > 0; --y) {
+    const int parent = predecessor.at<short>(y, best_x);
+    if (parent < first_candidate || parent > last_candidate) {
+      return false;
+    }
+    best_x = parent;
+    overlap_path[static_cast<size_t>(y - 1)] = best_x;
+  }
+
+  const auto minimum_maximum = std::minmax_element(overlap_path.begin(), overlap_path.end());
+  *seam_range = *minimum_maximum.second - *minimum_maximum.first;
+  const double average_x = std::accumulate(
+      overlap_path.begin(), overlap_path.end(), 0.0) /
+      static_cast<double>(overlap_path.size());
+  *seam_x = static_cast<int>(std::lround(average_x));
+  *seam_cost = static_cast<double>(best_total) /
+      static_cast<double>(common_height);
+
+  previous_path->assign(
+      static_cast<size_t>(previous.patch.rows),
+      expected_delta_x + overlap_path.front());
+  current_path->assign(
+      static_cast<size_t>(current.patch.rows),
+      overlap_path.front());
+  for (int y = 0; y < common_height; ++y) {
+    (*previous_path)[static_cast<size_t>(previous_top + y)] =
+        expected_delta_x + overlap_path[static_cast<size_t>(y)];
+    (*current_path)[static_cast<size_t>(current_top + y)] =
+        overlap_path[static_cast<size_t>(y)];
+  }
+  std::fill(
+      previous_path->begin() + previous_top + common_height,
+      previous_path->end(),
+      expected_delta_x + overlap_path.back());
+  std::fill(
+      current_path->begin() + current_top + common_height,
+      current_path->end(),
+      overlap_path.back());
+  return true;
+}
+
 void apply_guided_adaptive_seam_blending(
     std::vector<GuidedPatch>* patches,
     int panorama_width,
@@ -2271,6 +2475,10 @@ void apply_guided_adaptive_seam_blending(
 
     int seam_x = 0;
     double seam_cost = 0.0;
+    int seam_range = 0;
+    std::vector<int> previous_seam_path;
+    std::vector<int> current_seam_path;
+    bool used_dynamic_seam = false;
     if (!choose_guided_adaptive_seam(
             (*patches)[static_cast<size_t>(previous_index)],
             (*patches)[static_cast<size_t>(current_index)],
@@ -2280,6 +2488,20 @@ void apply_guided_adaptive_seam_blending(
             &seam_cost)) {
       continue;
     }
+#if GIRO360_EXPERIMENT_DEPTH_DYNAMIC_SEAM
+    const int anchor_seam_x = seam_x;
+    used_dynamic_seam = choose_guided_dynamic_seam(
+        (*patches)[static_cast<size_t>(previous_index)],
+        (*patches)[static_cast<size_t>(current_index)],
+        panorama_width,
+        patch_width,
+        anchor_seam_x,
+        &previous_seam_path,
+        &current_seam_path,
+        &seam_x,
+        &seam_cost,
+        &seam_range);
+#endif
 
     const int previous_start_x =
         (*patches)[static_cast<size_t>(previous_index)].center_x -
@@ -2325,6 +2547,9 @@ void apply_guided_adaptive_seam_blending(
           is_closure_seam,
           has_refinement_support);
     }
+    if (used_dynamic_seam) {
+      seam_blend_width = kGuidedDynamicSeamBlendWidth;
+    }
 
     GuidedPatch& previous_patch = (*patches)[static_cast<size_t>(previous_index)];
     GuidedPatch& current_patch = (*patches)[static_cast<size_t>(current_index)];
@@ -2332,6 +2557,10 @@ void apply_guided_adaptive_seam_blending(
     previous_patch.right_seam_blend_width = seam_blend_width;
     current_patch.left_seam_x = seam_x;
     current_patch.left_seam_blend_width = seam_blend_width;
+    if (used_dynamic_seam) {
+      previous_patch.right_seam_path = std::move(previous_seam_path);
+      current_patch.left_seam_path = std::move(current_seam_path);
+    }
 
     if (refinement_metrics != nullptr) {
       const int overlap_width = patch_width - expected_delta_x;
@@ -2345,6 +2574,14 @@ void apply_guided_adaptive_seam_blending(
       refinement_metrics->max_abs_adaptive_seam_offset = std::max(
           refinement_metrics->max_abs_adaptive_seam_offset,
           offset_from_center);
+      if (used_dynamic_seam) {
+        refinement_metrics->dynamic_seam_enabled = true;
+        refinement_metrics->dynamic_seam_count += 1;
+        refinement_metrics->total_dynamic_seam_range += seam_range;
+        refinement_metrics->max_dynamic_seam_range = std::max(
+            refinement_metrics->max_dynamic_seam_range,
+            seam_range);
+      }
       if (seam_cost >= 32.0) {
         refinement_metrics->adaptive_seam_low_confidence_count += 1;
       }
@@ -2369,26 +2606,36 @@ void apply_guided_adaptive_seam_blending(
 float guided_patch_alpha(
     const GuidedPatch& patch,
     int x,
+    int y,
     int patch_width,
     int fallback_blend_width) {
   float alpha = 1.0F;
 
-  if (patch.left_seam_x >= 0) {
+  const int left_seam_x =
+      y >= 0 && static_cast<size_t>(y) < patch.left_seam_path.size()
+      ? patch.left_seam_path[static_cast<size_t>(y)]
+      : patch.left_seam_x;
+  const int right_seam_x =
+      y >= 0 && static_cast<size_t>(y) < patch.right_seam_path.size()
+      ? patch.right_seam_path[static_cast<size_t>(y)]
+      : patch.right_seam_x;
+
+  if (left_seam_x >= 0) {
     const int width = std::max(1, patch.left_seam_blend_width);
     alpha *= smooth_step(
-        static_cast<float>(patch.left_seam_x - (width / 2)),
-        static_cast<float>(patch.left_seam_x + (width / 2)),
+        static_cast<float>(left_seam_x - (width / 2)),
+        static_cast<float>(left_seam_x + (width / 2)),
         static_cast<float>(x));
   } else if (x < fallback_blend_width) {
     alpha *= static_cast<float>(x + 1) /
         static_cast<float>(fallback_blend_width + 1);
   }
 
-  if (patch.right_seam_x >= 0) {
+  if (right_seam_x >= 0) {
     const int width = std::max(1, patch.right_seam_blend_width);
     alpha *= 1.0F - smooth_step(
-        static_cast<float>(patch.right_seam_x - (width / 2)),
-        static_cast<float>(patch.right_seam_x + (width / 2)),
+        static_cast<float>(right_seam_x - (width / 2)),
+        static_cast<float>(right_seam_x + (width / 2)),
         static_cast<float>(x));
   } else if (x >= patch_width - fallback_blend_width) {
     alpha *= static_cast<float>(patch_width - x) /
@@ -3457,6 +3704,7 @@ cv::Mat build_guided_cylindrical_fallback(
         const float alpha = guided_patch_alpha(
             guided_patch,
             x,
+            y,
             patch_width,
             blend_width);
         if (alpha <= kWeightEpsilon) {

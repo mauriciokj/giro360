@@ -150,7 +150,8 @@ Tab sem tripé. O relatório completo está em
 - [x] Usar as posições ARCore como priors no refinamento global.
 - [x] Diagnosticar os seis pares críticos com profundidade monocular.
 - [x] Testar seam reto orientado por profundidade nos 60 quadros.
-- [ ] Testar seam curvo por pixel orientado por profundidade.
+- [x] Testar seam curvo por pixel orientado por profundidade.
+- [ ] Testar warping local orientado por profundidade antes da composição.
 - [x] Selecionar quadros mais nítidos dentro da mesma volta e do mesmo ângulo.
 - [ ] Executar os testes controlados A, B e C no M3ISR.
 
@@ -181,7 +182,10 @@ mas não removeu o ghosting, reforçando que o limitante é geométrico.
 
 O teste 36 adicionou as bordas de profundidade ao custo da seam reta. Os 60
 mapas foram carregados e 2,7% dos pixels do panorama mudaram em relação ao teste
-34, principalmente nas emendas. A avaliação visual no Visão360 ainda decide se
-esta variante será mantida. Mesmo que melhore, uma seam limitada a uma coluna
-não consegue contornar objetos com formatos irregulares; o próximo experimento
-local será uma seam curva por pixel antes de avançar para reconstrução densa.
+34, principalmente nas emendas. Os testes 37 e 38 usaram uma seam curva por
+linha, primeiro livre e depois limitada a um corredor de 52 px com blend de
+18 px. Eles alteraram respectivamente 20,29% e 14,14% dos pixels, mas criaram
+cortes serrilhados mais perceptíveis em objetos próximos. A referência 34
+continua superior. Isso indica que o próximo ganho deve vir de warping local
+orientado por profundidade antes da escolha da seam, não de novos ajustes no
+blending.
