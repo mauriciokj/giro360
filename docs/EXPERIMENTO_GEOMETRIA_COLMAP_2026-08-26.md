@@ -192,11 +192,27 @@ não corrige duas projeções que discordam por paralaxe. A correção precisa a
 na geometria local antes da composição. A seam dinâmica permanece disponível
 somente por flag de compilação experimental e não altera o SDK normal.
 
+Os testes 39 e 40 aplicaram uma malha local antes da escolha da seam. O teste
+39 alinhou também a translação dominante: aceitou 19 pares, reduziu o RMS dos
+matches de 25,74 px para 6,91 px e chegou a 36,21 px de deslocamento. Apesar do
+ganho local, a deformação foi ampla demais. O teste 40 preserva a translação
+global e corrige somente o resíduo diferencial associado à paralaxe. Ele
+aceitou 13 pares, reduziu o RMS de 4,11 px para 2,38 px e limitou o maior
+deslocamento a 11,12 px. A diferença média para a referência caiu de 2,10% no
+teste 39 para 0,85% no teste 40.
+
+O teste 40 é geometricamente mais controlado, mas o custo médio das emendas
+subiu de 17,56 na referência para 23,31 e o número de emendas fracas passou de
+46 para 47. Por isso ele permanece candidato no Visão360, sem substituir o
+teste 34. A funcionalidade só é compilada com a flag experimental
+`GIRO360_EXPERIMENT_DEPTH_LOCAL_WARP`.
+
 ## Próximos testes
 
-1. Implementar warping local orientado por profundidade antes da composição.
-2. Comparar uma transformação por camadas de profundidade com uma malha local.
-3. Manter o teste 34 como referência visual e quantitativa.
+1. Avaliar o teste 40 contra o teste 34 no divisor e no plano esticado.
+2. Comparar uma transformação por camadas de profundidade com a malha local.
+3. Manter o teste 34 como referência visual e quantitativa até haver ganho nos
+   erros locais e também no custo global das emendas.
 4. Repetir a matriz no M3ISR para medir separadamente rotação pura e translação.
 
 No momento do teste havia cerca de 8 GB livres. Downloads de datasets e modelos

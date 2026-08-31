@@ -44,6 +44,10 @@
 #define GIRO360_EXPERIMENT_DEPTH_DYNAMIC_SEAM 0
 #endif
 
+#ifndef GIRO360_EXPERIMENT_DEPTH_LOCAL_WARP
+#define GIRO360_EXPERIMENT_DEPTH_LOCAL_WARP 0
+#endif
+
 namespace {
 
 constexpr int kGuidedFallbackCode = 20;
@@ -100,6 +104,15 @@ constexpr int kGuidedDynamicSeamCorridorRadius = 52;
 constexpr int kGuidedDynamicSeamBlendWidth = 18;
 constexpr float kGuidedDynamicSeamSmoothness = 3.0F;
 constexpr float kGuidedDynamicSeamCenterPrior = 0.08F;
+constexpr int kGuidedDepthWarpGridColumns = 8;
+constexpr int kGuidedDepthWarpGridRows = 14;
+constexpr int kGuidedDepthWarpMinMatches = 14;
+constexpr int kGuidedDepthWarpMinSpatialBins = 4;
+constexpr float kGuidedDepthWarpMaxHorizontalPixels = 28.0F;
+constexpr float kGuidedDepthWarpMaxVerticalPixels = 24.0F;
+constexpr float kGuidedDepthWarpSpatialSigmaPixels = 82.0F;
+constexpr float kGuidedDepthWarpDepthSigma = 0.12F;
+constexpr float kGuidedDepthWarpMinImprovementRatio = 0.18F;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kTwoPi = kPi * 2.0;
 constexpr double kGuidedTrustTelemetryMaxPitchRadians = kPi / 144.0;
@@ -107,6 +120,7 @@ constexpr float kWeightEpsilon = 1e-4F;
 
 struct GuidedPatch {
   cv::Mat patch;
+  cv::Mat depth;
   cv::Mat depth_edge;
   int center_x = 0;
   int vertical_offset = 0;
@@ -240,6 +254,14 @@ struct GuidedRefinementMetrics {
   int dynamic_seam_count = 0;
   double total_dynamic_seam_range = 0.0;
   int max_dynamic_seam_range = 0;
+  bool depth_local_warp_enabled = false;
+  int depth_local_warp_candidate_count = 0;
+  int depth_local_warp_applied_count = 0;
+  int depth_local_warp_rejected_count = 0;
+  int depth_local_warp_match_count = 0;
+  double total_depth_local_warp_rms_before = 0.0;
+  double total_depth_local_warp_rms_after = 0.0;
+  double max_depth_local_warp_displacement = 0.0;
   bool expanded_overlap_enabled = false;
   int expanded_overlap_source_crop_percent = 46;
   int expanded_overlap_patch_width = 0;
@@ -837,6 +859,28 @@ std::string format_guided_refinement_metrics(const GuidedRefinementMetrics& metr
               static_cast<double>(metrics.dynamic_seam_count))
       << "\nguided_dynamic_seam_max_range_px="
       << metrics.max_dynamic_seam_range
+      << "\nguided_depth_local_warp_enabled="
+      << (metrics.depth_local_warp_enabled ? "true" : "false")
+      << "\nguided_depth_local_warp_candidate_count="
+      << metrics.depth_local_warp_candidate_count
+      << "\nguided_depth_local_warp_applied_count="
+      << metrics.depth_local_warp_applied_count
+      << "\nguided_depth_local_warp_rejected_count="
+      << metrics.depth_local_warp_rejected_count
+      << "\nguided_depth_local_warp_match_count="
+      << metrics.depth_local_warp_match_count
+      << "\nguided_depth_local_warp_avg_rms_before_px="
+      << (metrics.depth_local_warp_applied_count == 0
+          ? 0.0
+          : metrics.total_depth_local_warp_rms_before /
+              static_cast<double>(metrics.depth_local_warp_applied_count))
+      << "\nguided_depth_local_warp_avg_rms_after_px="
+      << (metrics.depth_local_warp_applied_count == 0
+          ? 0.0
+          : metrics.total_depth_local_warp_rms_after /
+              static_cast<double>(metrics.depth_local_warp_applied_count))
+      << "\nguided_depth_local_warp_max_displacement_px="
+      << metrics.max_depth_local_warp_displacement
       << "\nguided_expanded_overlap_enabled="
       << (metrics.expanded_overlap_enabled ? "true" : "false")
       << "\nguided_expanded_overlap_source_crop_percent="
@@ -3159,6 +3203,446 @@ void apply_guided_local_mesh_warp(
 }
 #endif
 
+#if GIRO360_EXPERIMENT_DEPTH_LOCAL_WARP
+struct GuidedDepthWarpMatch {
+  cv::Point2f destination;
+  cv::Point2f source;
+  cv::Vec2f displacement;
+  float depth = 0.0F;
+};
+
+float guided_median(std::vector<float> values) {
+  if (values.empty()) {
+    return 0.0F;
+  }
+  const size_t middle = values.size() / 2;
+  std::nth_element(values.begin(), values.begin() + middle, values.end());
+  float median = values[middle];
+  if (values.size() % 2 == 0) {
+    const auto lower = std::max_element(values.begin(), values.begin() + middle);
+    median = (*lower + median) * 0.5F;
+  }
+  return median;
+}
+
+float guided_depth_at(const cv::Mat& depth, const cv::Point2f& point) {
+  if (depth.empty()) {
+    return std::numeric_limits<float>::quiet_NaN();
+  }
+  const int x = std::clamp(
+      static_cast<int>(std::lround(point.x)), 0, depth.cols - 1);
+  const int y = std::clamp(
+      static_cast<int>(std::lround(point.y)), 0, depth.rows - 1);
+  return depth.at<float>(y, x);
+}
+
+std::vector<GuidedDepthWarpMatch> find_guided_depth_warp_matches(
+    const cv::Mat& previous_gray,
+    const cv::Mat& current_gray,
+    const cv::Mat& previous_depth,
+    const cv::Mat& current_depth) {
+  std::vector<GuidedDepthWarpMatch> matches;
+  if (previous_gray.empty() || current_gray.empty() ||
+      previous_depth.empty() || current_depth.empty()) {
+    return matches;
+  }
+
+  cv::Ptr<cv::ORB> orb = cv::ORB::create(1800);
+  std::vector<cv::KeyPoint> previous_keypoints;
+  std::vector<cv::KeyPoint> current_keypoints;
+  cv::Mat previous_descriptors;
+  cv::Mat current_descriptors;
+  orb->detectAndCompute(
+      previous_gray,
+      cv::noArray(),
+      previous_keypoints,
+      previous_descriptors);
+  orb->detectAndCompute(
+      current_gray,
+      cv::noArray(),
+      current_keypoints,
+      current_descriptors);
+  if (previous_descriptors.empty() || current_descriptors.empty()) {
+    return matches;
+  }
+
+  cv::BFMatcher matcher(cv::NORM_HAMMING);
+  std::vector<std::vector<cv::DMatch>> forward_matches;
+  std::vector<std::vector<cv::DMatch>> reverse_matches;
+  matcher.knnMatch(previous_descriptors, current_descriptors, forward_matches, 2);
+  matcher.knnMatch(current_descriptors, previous_descriptors, reverse_matches, 2);
+
+  std::vector<int> reverse_best(
+      static_cast<size_t>(current_descriptors.rows), -1);
+  for (const auto& pair : reverse_matches) {
+    if (pair.size() < 2 || pair[0].distance >= 0.78F * pair[1].distance) {
+      continue;
+    }
+    reverse_best[static_cast<size_t>(pair[0].queryIdx)] = pair[0].trainIdx;
+  }
+
+  std::vector<GuidedDepthWarpMatch> candidates;
+  std::vector<float> displacement_x;
+  std::vector<float> displacement_y;
+  for (const auto& pair : forward_matches) {
+    if (pair.size() < 2 || pair[0].distance >= 0.78F * pair[1].distance) {
+      continue;
+    }
+    const cv::DMatch& match = pair[0];
+    if (match.trainIdx < 0 ||
+        static_cast<size_t>(match.trainIdx) >= reverse_best.size() ||
+        reverse_best[static_cast<size_t>(match.trainIdx)] != match.queryIdx) {
+      continue;
+    }
+
+    const cv::Point2f destination =
+        previous_keypoints[static_cast<size_t>(match.queryIdx)].pt;
+    const cv::Point2f source =
+        current_keypoints[static_cast<size_t>(match.trainIdx)].pt;
+    const float previous_value = guided_depth_at(previous_depth, destination);
+    const float current_value = guided_depth_at(current_depth, source);
+    if (!std::isfinite(previous_value) || !std::isfinite(current_value) ||
+        std::abs(previous_value - current_value) > 0.28F) {
+      continue;
+    }
+
+    const cv::Vec2f displacement(
+        source.x - destination.x,
+        source.y - destination.y);
+    if (std::abs(displacement[0]) > 48.0F ||
+        std::abs(displacement[1]) > 36.0F) {
+      continue;
+    }
+    candidates.push_back(GuidedDepthWarpMatch{
+        destination,
+        source,
+        displacement,
+        previous_value,
+    });
+    displacement_x.push_back(displacement[0]);
+    displacement_y.push_back(displacement[1]);
+  }
+
+  if (candidates.size() < static_cast<size_t>(kGuidedDepthWarpMinMatches)) {
+    return matches;
+  }
+  const float median_x = guided_median(displacement_x);
+  const float median_y = guided_median(displacement_y);
+  for (const GuidedDepthWarpMatch& candidate : candidates) {
+    if (std::abs(candidate.displacement[0] - median_x) <= 18.0F &&
+        std::abs(candidate.displacement[1] - median_y) <= 16.0F) {
+      GuidedDepthWarpMatch local_match = candidate;
+      local_match.displacement -= cv::Vec2f(median_x, median_y);
+      matches.push_back(local_match);
+    }
+  }
+  return matches;
+}
+
+bool build_guided_depth_local_flow(
+    const cv::Mat& previous_depth,
+    const std::vector<GuidedDepthWarpMatch>& matches,
+    cv::Mat* dense_flow,
+    cv::Mat* dense_confidence,
+    double* rms_before,
+    double* rms_after,
+    double* max_displacement) {
+  if (dense_flow == nullptr || dense_confidence == nullptr ||
+      rms_before == nullptr || rms_after == nullptr ||
+      max_displacement == nullptr || previous_depth.empty() ||
+      matches.size() < static_cast<size_t>(kGuidedDepthWarpMinMatches)) {
+    return false;
+  }
+
+  std::vector<cv::Point2f> destinations;
+  destinations.reserve(matches.size());
+  double squared_before = 0.0;
+  for (const GuidedDepthWarpMatch& match : matches) {
+    destinations.push_back(match.destination);
+    squared_before += match.displacement.dot(match.displacement);
+  }
+  if (guided_match_spatial_bin_count(
+          destinations, previous_depth.cols, previous_depth.rows) <
+      kGuidedDepthWarpMinSpatialBins) {
+    return false;
+  }
+
+  const cv::Size grid_size(
+      kGuidedDepthWarpGridColumns,
+      kGuidedDepthWarpGridRows);
+  cv::Mat grid_flow(grid_size, CV_32FC2, cv::Scalar::all(0));
+  cv::Mat grid_confidence(grid_size, CV_32F, cv::Scalar::all(0));
+  const float spatial_denominator = 2.0F *
+      kGuidedDepthWarpSpatialSigmaPixels *
+      kGuidedDepthWarpSpatialSigmaPixels;
+  const float depth_denominator = 2.0F *
+      kGuidedDepthWarpDepthSigma * kGuidedDepthWarpDepthSigma;
+
+  for (int grid_y = 0; grid_y < grid_size.height; ++grid_y) {
+    const float y = grid_size.height == 1
+        ? 0.0F
+        : static_cast<float>(grid_y) *
+            static_cast<float>(previous_depth.rows - 1) /
+            static_cast<float>(grid_size.height - 1);
+    for (int grid_x = 0; grid_x < grid_size.width; ++grid_x) {
+      const float x = grid_size.width == 1
+          ? 0.0F
+          : static_cast<float>(grid_x) *
+              static_cast<float>(previous_depth.cols - 1) /
+              static_cast<float>(grid_size.width - 1);
+      const float query_depth = guided_depth_at(previous_depth, cv::Point2f(x, y));
+      cv::Vec2f weighted_flow(0.0F, 0.0F);
+      float total_weight = 0.0F;
+      for (const GuidedDepthWarpMatch& match : matches) {
+        const float dx = x - match.destination.x;
+        const float dy = y - match.destination.y;
+        const float depth_delta = query_depth - match.depth;
+        const float weight = std::exp(-((dx * dx) + (dy * dy)) /
+            spatial_denominator) *
+            std::exp(-(depth_delta * depth_delta) / depth_denominator);
+        weighted_flow += match.displacement * weight;
+        total_weight += weight;
+      }
+      if (total_weight < 0.08F) {
+        continue;
+      }
+      cv::Vec2f flow = weighted_flow / total_weight;
+      flow[0] = std::clamp(
+          flow[0],
+          -kGuidedDepthWarpMaxHorizontalPixels,
+          kGuidedDepthWarpMaxHorizontalPixels);
+      flow[1] = std::clamp(
+          flow[1],
+          -kGuidedDepthWarpMaxVerticalPixels,
+          kGuidedDepthWarpMaxVerticalPixels);
+      grid_flow.at<cv::Vec2f>(grid_y, grid_x) = flow;
+      grid_confidence.at<float>(grid_y, grid_x) =
+          std::clamp(total_weight / 2.0F, 0.0F, 1.0F);
+    }
+  }
+
+  cv::GaussianBlur(grid_flow, grid_flow, cv::Size(3, 3), 0.0);
+  cv::GaussianBlur(grid_confidence, grid_confidence, cv::Size(3, 3), 0.0);
+  cv::resize(
+      grid_flow,
+      *dense_flow,
+      previous_depth.size(),
+      0,
+      0,
+      cv::INTER_CUBIC);
+  cv::resize(
+      grid_confidence,
+      *dense_confidence,
+      previous_depth.size(),
+      0,
+      0,
+      cv::INTER_CUBIC);
+
+  double squared_after = 0.0;
+  *max_displacement = 0.0;
+  for (const GuidedDepthWarpMatch& match : matches) {
+    const int x = std::clamp(
+        static_cast<int>(std::lround(match.destination.x)),
+        0,
+        dense_flow->cols - 1);
+    const int y = std::clamp(
+        static_cast<int>(std::lround(match.destination.y)),
+        0,
+        dense_flow->rows - 1);
+    const cv::Vec2f flow = dense_flow->at<cv::Vec2f>(y, x) *
+        dense_confidence->at<float>(y, x);
+    const cv::Vec2f residual = match.displacement - flow;
+    squared_after += residual.dot(residual);
+    *max_displacement = std::max(*max_displacement, cv::norm(flow));
+  }
+  *rms_before = std::sqrt(squared_before / matches.size());
+  *rms_after = std::sqrt(squared_after / matches.size());
+  return *rms_before >= 2.5 && std::isfinite(*rms_after) &&
+      *rms_after <= *rms_before *
+          (1.0 - kGuidedDepthWarpMinImprovementRatio);
+}
+
+bool apply_guided_depth_local_warp_to_pair(
+    const GuidedPatch& previous,
+    GuidedPatch* current,
+    int panorama_width,
+    int patch_width,
+    int* match_count,
+    double* rms_before,
+    double* rms_after,
+    double* max_displacement) {
+  if (current == nullptr || match_count == nullptr || rms_before == nullptr ||
+      rms_after == nullptr || max_displacement == nullptr ||
+      !previous.valid || !current->valid || previous.patch.empty() ||
+      current->patch.empty() || previous.depth.empty() ||
+      current->depth.empty()) {
+    return false;
+  }
+
+  const int expected_delta_x = guided_forward_patch_delta(
+      previous, *current, panorama_width);
+  if (expected_delta_x <= 0 || expected_delta_x >= patch_width) {
+    return false;
+  }
+  const int overlap_width = patch_width - expected_delta_x;
+  if (overlap_width < kGuidedAdaptiveSeamMinOverlapPixels) {
+    return false;
+  }
+
+  const int vertical_delta = previous.vertical_offset - current->vertical_offset;
+  const int previous_top = std::max(0, -vertical_delta);
+  const int current_top = previous_top + vertical_delta;
+  const int common_height = std::min(
+      previous.patch.rows - previous_top,
+      current->patch.rows - current_top);
+  if (previous_top < 0 || current_top < 0 || common_height < 64) {
+    return false;
+  }
+
+  const cv::Rect previous_overlap(
+      expected_delta_x,
+      previous_top,
+      overlap_width,
+      common_height);
+  const cv::Rect current_overlap(
+      0,
+      current_top,
+      overlap_width,
+      common_height);
+  cv::Mat previous_gray;
+  cv::Mat current_gray;
+  cv::cvtColor(
+      previous.patch(previous_overlap), previous_gray, cv::COLOR_BGR2GRAY);
+  cv::cvtColor(
+      current->patch(current_overlap), current_gray, cv::COLOR_BGR2GRAY);
+  const cv::Mat previous_depth = previous.depth(previous_overlap);
+  const cv::Mat current_depth = current->depth(current_overlap);
+  const std::vector<GuidedDepthWarpMatch> matches =
+      find_guided_depth_warp_matches(
+          previous_gray,
+          current_gray,
+          previous_depth,
+          current_depth);
+  *match_count = static_cast<int>(matches.size());
+
+  cv::Mat dense_flow;
+  cv::Mat dense_confidence;
+  if (!build_guided_depth_local_flow(
+          previous_depth,
+          matches,
+          &dense_flow,
+          &dense_confidence,
+          rms_before,
+          rms_after,
+          max_displacement)) {
+    return false;
+  }
+
+  cv::Mat map_x(current->patch.size(), CV_32F);
+  cv::Mat map_y(current->patch.size(), CV_32F);
+  for (int y = 0; y < current->patch.rows; ++y) {
+    for (int x = 0; x < current->patch.cols; ++x) {
+      map_x.at<float>(y, x) = static_cast<float>(x);
+      map_y.at<float>(y, x) = static_cast<float>(y);
+    }
+  }
+
+  const float fade_width = std::max(16.0F, overlap_width * 0.16F);
+  for (int y = 0; y < common_height; ++y) {
+    const int patch_y = current_top + y;
+    for (int x = 0; x < overlap_width; ++x) {
+      const float edge_influence = smooth_step(
+          0.0F, fade_width, static_cast<float>(x)) *
+          (1.0F - smooth_step(
+              static_cast<float>(overlap_width) - fade_width,
+              static_cast<float>(overlap_width - 1),
+              static_cast<float>(x)));
+      const float confidence = std::clamp(
+          dense_confidence.at<float>(y, x), 0.0F, 1.0F);
+      const cv::Vec2f flow = dense_flow.at<cv::Vec2f>(y, x) *
+          edge_influence * confidence;
+      map_x.at<float>(patch_y, x) = static_cast<float>(x) + flow[0];
+      map_y.at<float>(patch_y, x) = static_cast<float>(patch_y) + flow[1];
+    }
+  }
+
+  cv::Mat warped_patch;
+  cv::remap(
+      current->patch,
+      warped_patch,
+      map_x,
+      map_y,
+      cv::INTER_CUBIC,
+      cv::BORDER_REFLECT101);
+  if (warped_patch.empty()) {
+    return false;
+  }
+  current->patch = warped_patch;
+  cv::remap(
+      current->depth,
+      current->depth,
+      map_x,
+      map_y,
+      cv::INTER_LINEAR,
+      cv::BORDER_REFLECT101);
+  if (!current->depth_edge.empty()) {
+    cv::remap(
+        current->depth_edge,
+        current->depth_edge,
+        map_x,
+        map_y,
+        cv::INTER_LINEAR,
+        cv::BORDER_REFLECT101);
+  }
+  return true;
+}
+
+void apply_guided_depth_local_warp(
+    std::vector<GuidedPatch>* patches,
+    int panorama_width,
+    int patch_width,
+    GuidedRefinementMetrics* refinement_metrics) {
+  if (patches == nullptr || patches->size() < 2 ||
+      refinement_metrics == nullptr) {
+    return;
+  }
+  refinement_metrics->depth_local_warp_enabled = true;
+  for (size_t current_index = 1; current_index < patches->size();
+       ++current_index) {
+    GuidedPatch& previous = (*patches)[current_index - 1];
+    GuidedPatch& current = (*patches)[current_index];
+    if (previous.depth.empty() || current.depth.empty()) {
+      continue;
+    }
+    refinement_metrics->depth_local_warp_candidate_count += 1;
+    int match_count = 0;
+    double rms_before = 0.0;
+    double rms_after = 0.0;
+    double max_displacement = 0.0;
+    const bool applied = apply_guided_depth_local_warp_to_pair(
+        previous,
+        &current,
+        panorama_width,
+        patch_width,
+        &match_count,
+        &rms_before,
+        &rms_after,
+        &max_displacement);
+    if (!applied) {
+      refinement_metrics->depth_local_warp_rejected_count += 1;
+      continue;
+    }
+    refinement_metrics->depth_local_warp_applied_count += 1;
+    refinement_metrics->depth_local_warp_match_count += match_count;
+    refinement_metrics->total_depth_local_warp_rms_before += rms_before;
+    refinement_metrics->total_depth_local_warp_rms_after += rms_after;
+    refinement_metrics->max_depth_local_warp_displacement = std::max(
+        refinement_metrics->max_depth_local_warp_displacement,
+        max_displacement);
+  }
+}
+#endif
+
 void apply_guided_straight_seam_masks(
     const GuidedPatch& previous,
     const GuidedPatch& current,
@@ -3561,6 +4045,7 @@ cv::Mat build_guided_cylindrical_fallback(
     cv::Mat patch;
     cv::resize(image(crop_rect), patch, cv::Size(patch_width, band_height), 0, 0, cv::INTER_AREA);
 
+    cv::Mat patch_depth;
     cv::Mat depth_edge;
 #if GIRO360_EXPERIMENT_DEPTH_SEAM
     if (static_cast<size_t>(image_index) < depth_maps.size() &&
@@ -3575,18 +4060,17 @@ cv::Mat build_guided_cylindrical_fallback(
           0,
           std::min(depth_crop_width, source_depth.cols - depth_crop_x),
           source_depth.rows);
-      cv::Mat resized_depth;
       cv::resize(
           source_depth(depth_crop_rect),
-          resized_depth,
+          patch_depth,
           cv::Size(patch_width, band_height),
           0,
           0,
           cv::INTER_LINEAR);
       cv::Mat gradient_x;
       cv::Mat gradient_y;
-      cv::Sobel(resized_depth, gradient_x, CV_32F, 1, 0, 3);
-      cv::Sobel(resized_depth, gradient_y, CV_32F, 0, 1, 3);
+      cv::Sobel(patch_depth, gradient_x, CV_32F, 1, 0, 3);
+      cv::Sobel(patch_depth, gradient_y, CV_32F, 0, 1, 3);
       cv::magnitude(gradient_x, gradient_y, depth_edge);
       depth_edge *= 3.0F;
       cv::threshold(depth_edge, depth_edge, 1.0, 1.0, cv::THRESH_TRUNC);
@@ -3617,6 +4101,7 @@ cv::Mat build_guided_cylindrical_fallback(
 
     guided_patches[static_cast<size_t>(image_index)] = GuidedPatch{
         patch,
+        patch_depth,
         depth_edge,
         center_x,
         vertical_offset,
@@ -3658,6 +4143,14 @@ cv::Mat build_guided_cylindrical_fallback(
 
 #if GIRO360_EXPERIMENT_LOCAL_MESH_WARP
   apply_guided_local_mesh_warp(
+      &guided_patches,
+      panorama_width,
+      patch_width,
+      refinement_metrics);
+#endif
+
+#if GIRO360_EXPERIMENT_DEPTH_LOCAL_WARP
+  apply_guided_depth_local_warp(
       &guided_patches,
       panorama_width,
       patch_width,

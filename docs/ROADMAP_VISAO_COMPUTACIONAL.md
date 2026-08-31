@@ -151,7 +151,8 @@ Tab sem tripé. O relatório completo está em
 - [x] Diagnosticar os seis pares críticos com profundidade monocular.
 - [x] Testar seam reto orientado por profundidade nos 60 quadros.
 - [x] Testar seam curvo por pixel orientado por profundidade.
-- [ ] Testar warping local orientado por profundidade antes da composição.
+- [x] Testar warping local orientado por profundidade antes da composição.
+- [ ] Testar composição por camadas discretas de profundidade.
 - [x] Selecionar quadros mais nítidos dentro da mesma volta e do mesmo ângulo.
 - [ ] Executar os testes controlados A, B e C no M3ISR.
 
@@ -189,3 +190,11 @@ cortes serrilhados mais perceptíveis em objetos próximos. A referência 34
 continua superior. Isso indica que o próximo ganho deve vir de warping local
 orientado por profundidade antes da escolha da seam, não de novos ajustes no
 blending.
+
+O quinto ciclo testou essa hipótese. Uma malha que absorvia a translação global
+reduziu o erro dos matches, mas deformou demais a imagem. A versão residual do
+teste 40 limitou a correção a 11,12 px e reduziu o RMS local de 4,11 px para
+2,38 px, alterando 0,85% da referência. Ainda assim, o custo médio das emendas
+subiu para 23,31. A referência 34 permanece como melhor resultado e o próximo
+teste separará a cena em camadas discretas de profundidade, evitando espalhar a
+correção de um objeto para seus vizinhos.
