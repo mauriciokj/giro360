@@ -152,7 +152,8 @@ Tab sem tripé. O relatório completo está em
 - [x] Testar seam reto orientado por profundidade nos 60 quadros.
 - [x] Testar seam curvo por pixel orientado por profundidade.
 - [x] Testar warping local orientado por profundidade antes da composição.
-- [ ] Testar composição por camadas discretas de profundidade.
+- [x] Testar composição por camadas discretas de profundidade.
+- [ ] Testar seleção de fonte com máscara de oclusão por profundidade.
 - [x] Selecionar quadros mais nítidos dentro da mesma volta e do mesmo ângulo.
 - [ ] Executar os testes controlados A, B e C no M3ISR.
 
@@ -198,3 +199,12 @@ teste 40 limitou a correção a 11,12 px e reduziu o RMS local de 4,11 px para
 subiu para 23,31. A referência 34 permanece como melhor resultado e o próximo
 teste separará a cena em camadas discretas de profundidade, evitando espalhar a
 correção de um objeto para seus vizinhos.
+
+O sexto ciclo executou essa separação no teste 41. Apenas 4 dos 59 pares
+receberam correção, com RMS local reduzido de 4,55 px para 2,96 px e
+deslocamento máximo de 7,64 px. A variante alterou somente 0,67% dos pixels e
+0,27% das bordas da referência, mas o custo médio das emendas chegou a 23,50 e
+o total de emendas fracas a 48. A referência 34 segue superior. A melhora local
+sem melhora visual confirma que o problema restante envolve visibilidade e
+oclusão: o próximo teste escolherá uma única fonte por camada e evitará misturar
+pixels conflitantes de objetos em profundidades diferentes.

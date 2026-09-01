@@ -207,10 +207,25 @@ subiu de 17,56 na referência para 23,31 e o número de emendas fracas passou de
 teste 34. A funcionalidade só é compilada com a flag experimental
 `GIRO360_EXPERIMENT_DEPTH_LOCAL_WARP`.
 
+O teste 41 substituiu o campo contínuo por três camadas discretas de
+profundidade. A correção foi aplicada somente quando cada camada tinha matches
+suficientes, cobertura espacial e deslocamento diferente das vizinhas. Apenas
+4 dos 59 pares foram aceitos; nesses pares, o RMS caiu de 4,55 px para 2,96 px,
+com deslocamento máximo de 7,64 px. A diferença média para a referência foi de
+0,67%, e a diferença nas bordas foi de 0,27%.
+
+Apesar da seletividade, o custo médio das emendas subiu para 23,50 e o número
+de emendas fracas para 48. A comparação no Visão360 não mostrou melhora
+relevante nos fantasmas já presentes. Isso indica que os pixels estão mais bem
+alinhados localmente, mas o compositor ainda mistura superfícies que não podem
+ser simultaneamente visíveis. O próximo experimento deve usar máscaras de
+oclusão e selecionar uma única imagem fonte por camada, em vez de deformar e
+misturar as duas projeções conflitantes.
+
 ## Próximos testes
 
-1. Avaliar o teste 40 contra o teste 34 no divisor e no plano esticado.
-2. Comparar uma transformação por camadas de profundidade com a malha local.
+1. Testar seleção de fonte com máscara de oclusão por profundidade.
+2. Evitar blending entre camadas com ordem de visibilidade conflitante.
 3. Manter o teste 34 como referência visual e quantitativa até haver ganho nos
    erros locais e também no custo global das emendas.
 4. Repetir a matriz no M3ISR para medir separadamente rotação pura e translação.

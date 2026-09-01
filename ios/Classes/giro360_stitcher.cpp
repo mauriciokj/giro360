@@ -48,6 +48,10 @@
 #define GIRO360_EXPERIMENT_DEPTH_LOCAL_WARP 0
 #endif
 
+#ifndef GIRO360_EXPERIMENT_DEPTH_LAYER_WARP
+#define GIRO360_EXPERIMENT_DEPTH_LAYER_WARP 0
+#endif
+
 namespace {
 
 constexpr int kGuidedFallbackCode = 20;
@@ -113,6 +117,10 @@ constexpr float kGuidedDepthWarpMaxVerticalPixels = 24.0F;
 constexpr float kGuidedDepthWarpSpatialSigmaPixels = 82.0F;
 constexpr float kGuidedDepthWarpDepthSigma = 0.12F;
 constexpr float kGuidedDepthWarpMinImprovementRatio = 0.18F;
+constexpr int kGuidedDepthLayerCount = 3;
+constexpr int kGuidedDepthLayerMinMatches = 4;
+constexpr float kGuidedDepthLayerMaxDisplacement = 14.0F;
+constexpr float kGuidedDepthLayerMinSeparation = 1.5F;
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kTwoPi = kPi * 2.0;
 constexpr double kGuidedTrustTelemetryMaxPitchRadians = kPi / 144.0;
@@ -262,6 +270,14 @@ struct GuidedRefinementMetrics {
   double total_depth_local_warp_rms_before = 0.0;
   double total_depth_local_warp_rms_after = 0.0;
   double max_depth_local_warp_displacement = 0.0;
+  bool depth_layer_warp_enabled = false;
+  int depth_layer_warp_candidate_count = 0;
+  int depth_layer_warp_applied_count = 0;
+  int depth_layer_warp_rejected_count = 0;
+  int depth_layer_warp_match_count = 0;
+  double total_depth_layer_warp_rms_before = 0.0;
+  double total_depth_layer_warp_rms_after = 0.0;
+  double max_depth_layer_warp_displacement = 0.0;
   bool expanded_overlap_enabled = false;
   int expanded_overlap_source_crop_percent = 46;
   int expanded_overlap_patch_width = 0;
@@ -881,6 +897,28 @@ std::string format_guided_refinement_metrics(const GuidedRefinementMetrics& metr
               static_cast<double>(metrics.depth_local_warp_applied_count))
       << "\nguided_depth_local_warp_max_displacement_px="
       << metrics.max_depth_local_warp_displacement
+      << "\nguided_depth_layer_warp_enabled="
+      << (metrics.depth_layer_warp_enabled ? "true" : "false")
+      << "\nguided_depth_layer_warp_candidate_count="
+      << metrics.depth_layer_warp_candidate_count
+      << "\nguided_depth_layer_warp_applied_count="
+      << metrics.depth_layer_warp_applied_count
+      << "\nguided_depth_layer_warp_rejected_count="
+      << metrics.depth_layer_warp_rejected_count
+      << "\nguided_depth_layer_warp_match_count="
+      << metrics.depth_layer_warp_match_count
+      << "\nguided_depth_layer_warp_avg_rms_before_px="
+      << (metrics.depth_layer_warp_applied_count == 0
+          ? 0.0
+          : metrics.total_depth_layer_warp_rms_before /
+              static_cast<double>(metrics.depth_layer_warp_applied_count))
+      << "\nguided_depth_layer_warp_avg_rms_after_px="
+      << (metrics.depth_layer_warp_applied_count == 0
+          ? 0.0
+          : metrics.total_depth_layer_warp_rms_after /
+              static_cast<double>(metrics.depth_layer_warp_applied_count))
+      << "\nguided_depth_layer_warp_max_displacement_px="
+      << metrics.max_depth_layer_warp_displacement
       << "\nguided_expanded_overlap_enabled="
       << (metrics.expanded_overlap_enabled ? "true" : "false")
       << "\nguided_expanded_overlap_source_crop_percent="
@@ -3203,7 +3241,7 @@ void apply_guided_local_mesh_warp(
 }
 #endif
 
-#if GIRO360_EXPERIMENT_DEPTH_LOCAL_WARP
+#if GIRO360_EXPERIMENT_DEPTH_LOCAL_WARP || GIRO360_EXPERIMENT_DEPTH_LAYER_WARP
 struct GuidedDepthWarpMatch {
   cv::Point2f destination;
   cv::Point2f source;
@@ -3462,6 +3500,156 @@ bool build_guided_depth_local_flow(
           (1.0 - kGuidedDepthWarpMinImprovementRatio);
 }
 
+struct GuidedDepthLayer {
+  float center = 0.0F;
+  cv::Vec2f displacement = cv::Vec2f(0.0F, 0.0F);
+  int match_count = 0;
+};
+
+bool build_guided_depth_layer_flow(
+    const cv::Mat& previous_depth,
+    const std::vector<GuidedDepthWarpMatch>& matches,
+    cv::Mat* dense_flow,
+    cv::Mat* dense_confidence,
+    double* rms_before,
+    double* rms_after,
+    double* max_displacement) {
+  if (dense_flow == nullptr || dense_confidence == nullptr ||
+      rms_before == nullptr || rms_after == nullptr ||
+      max_displacement == nullptr || previous_depth.empty() ||
+      matches.size() < static_cast<size_t>(
+          kGuidedDepthLayerCount * kGuidedDepthLayerMinMatches)) {
+    return false;
+  }
+
+  std::vector<cv::Point2f> destinations;
+  std::vector<float> sorted_depths;
+  destinations.reserve(matches.size());
+  sorted_depths.reserve(matches.size());
+  double squared_before = 0.0;
+  for (const GuidedDepthWarpMatch& match : matches) {
+    destinations.push_back(match.destination);
+    sorted_depths.push_back(match.depth);
+    squared_before += match.displacement.dot(match.displacement);
+  }
+  if (guided_match_spatial_bin_count(
+          destinations, previous_depth.cols, previous_depth.rows) <
+      kGuidedDepthWarpMinSpatialBins) {
+    return false;
+  }
+  std::sort(sorted_depths.begin(), sorted_depths.end());
+  const float first_threshold = sorted_depths[sorted_depths.size() / 3];
+  const float second_threshold =
+      sorted_depths[(sorted_depths.size() * 2) / 3];
+  if (second_threshold - first_threshold < 0.04F) {
+    return false;
+  }
+
+  std::array<std::vector<float>, kGuidedDepthLayerCount> layer_depths;
+  std::array<std::vector<float>, kGuidedDepthLayerCount> layer_dx;
+  std::array<std::vector<float>, kGuidedDepthLayerCount> layer_dy;
+  auto layer_index = [first_threshold, second_threshold](float depth) {
+    if (depth <= first_threshold) return 0;
+    if (depth <= second_threshold) return 1;
+    return 2;
+  };
+  for (const GuidedDepthWarpMatch& match : matches) {
+    const int index = layer_index(match.depth);
+    layer_depths[static_cast<size_t>(index)].push_back(match.depth);
+    layer_dx[static_cast<size_t>(index)].push_back(match.displacement[0]);
+    layer_dy[static_cast<size_t>(index)].push_back(match.displacement[1]);
+  }
+
+  std::array<GuidedDepthLayer, kGuidedDepthLayerCount> layers;
+  for (int index = 0; index < kGuidedDepthLayerCount; ++index) {
+    const size_t layer = static_cast<size_t>(index);
+    if (layer_depths[layer].size() <
+        static_cast<size_t>(kGuidedDepthLayerMinMatches)) {
+      return false;
+    }
+    layers[layer].center = guided_median(layer_depths[layer]);
+    layers[layer].displacement = cv::Vec2f(
+        std::clamp(
+            guided_median(layer_dx[layer]),
+            -kGuidedDepthLayerMaxDisplacement,
+            kGuidedDepthLayerMaxDisplacement),
+        std::clamp(
+            guided_median(layer_dy[layer]),
+            -kGuidedDepthLayerMaxDisplacement,
+            kGuidedDepthLayerMaxDisplacement));
+    layers[layer].match_count = static_cast<int>(layer_depths[layer].size());
+  }
+
+  double maximum_layer_separation = 0.0;
+  for (int first = 0; first < kGuidedDepthLayerCount; ++first) {
+    for (int second = first + 1; second < kGuidedDepthLayerCount; ++second) {
+      maximum_layer_separation = std::max(
+          maximum_layer_separation,
+          cv::norm(
+              layers[static_cast<size_t>(first)].displacement -
+              layers[static_cast<size_t>(second)].displacement));
+    }
+  }
+  if (maximum_layer_separation < kGuidedDepthLayerMinSeparation) {
+    return false;
+  }
+
+  *dense_flow = cv::Mat(
+      previous_depth.size(), CV_32FC2, cv::Scalar::all(0));
+  *dense_confidence = cv::Mat(
+      previous_depth.size(), CV_32F, cv::Scalar::all(0));
+  for (int y = 0; y < previous_depth.rows; ++y) {
+    for (int x = 0; x < previous_depth.cols; ++x) {
+      const float depth = previous_depth.at<float>(y, x);
+      int nearest = 0;
+      float nearest_distance = std::abs(depth - layers[0].center);
+      for (int index = 1; index < kGuidedDepthLayerCount; ++index) {
+        const float distance = std::abs(
+            depth - layers[static_cast<size_t>(index)].center);
+        if (distance < nearest_distance) {
+          nearest = index;
+          nearest_distance = distance;
+        }
+      }
+      const GuidedDepthLayer& layer = layers[static_cast<size_t>(nearest)];
+      const float support = std::clamp(
+          static_cast<float>(layer.match_count) / 12.0F, 0.35F, 1.0F);
+      const float depth_confidence = std::exp(
+          -(nearest_distance * nearest_distance) /
+          (2.0F * kGuidedDepthWarpDepthSigma *
+              kGuidedDepthWarpDepthSigma));
+      dense_flow->at<cv::Vec2f>(y, x) = layer.displacement;
+      dense_confidence->at<float>(y, x) = support * depth_confidence;
+    }
+  }
+  cv::GaussianBlur(*dense_flow, *dense_flow, cv::Size(3, 3), 0.0);
+  cv::GaussianBlur(
+      *dense_confidence, *dense_confidence, cv::Size(3, 3), 0.0);
+
+  double squared_after = 0.0;
+  *max_displacement = 0.0;
+  for (const GuidedDepthWarpMatch& match : matches) {
+    const int x = std::clamp(
+        static_cast<int>(std::lround(match.destination.x)),
+        0,
+        dense_flow->cols - 1);
+    const int y = std::clamp(
+        static_cast<int>(std::lround(match.destination.y)),
+        0,
+        dense_flow->rows - 1);
+    const cv::Vec2f flow = dense_flow->at<cv::Vec2f>(y, x) *
+        dense_confidence->at<float>(y, x);
+    const cv::Vec2f residual = match.displacement - flow;
+    squared_after += residual.dot(residual);
+    *max_displacement = std::max(*max_displacement, cv::norm(flow));
+  }
+  *rms_before = std::sqrt(squared_before / matches.size());
+  *rms_after = std::sqrt(squared_after / matches.size());
+  return *rms_before >= 2.5 && std::isfinite(*rms_after) &&
+      *rms_after <= *rms_before *
+          (1.0 - kGuidedDepthWarpMinImprovementRatio);
+}
+
 bool apply_guided_depth_local_warp_to_pair(
     const GuidedPatch& previous,
     GuidedPatch* current,
@@ -3527,6 +3715,18 @@ bool apply_guided_depth_local_warp_to_pair(
 
   cv::Mat dense_flow;
   cv::Mat dense_confidence;
+#if GIRO360_EXPERIMENT_DEPTH_LAYER_WARP
+  if (!build_guided_depth_layer_flow(
+          previous_depth,
+          matches,
+          &dense_flow,
+          &dense_confidence,
+          rms_before,
+          rms_after,
+          max_displacement)) {
+    return false;
+  }
+#else
   if (!build_guided_depth_local_flow(
           previous_depth,
           matches,
@@ -3537,6 +3737,7 @@ bool apply_guided_depth_local_warp_to_pair(
           max_displacement)) {
     return false;
   }
+#endif
 
   cv::Mat map_x(current->patch.size(), CV_32F);
   cv::Mat map_y(current->patch.size(), CV_32F);
@@ -3606,7 +3807,11 @@ void apply_guided_depth_local_warp(
       refinement_metrics == nullptr) {
     return;
   }
+#if GIRO360_EXPERIMENT_DEPTH_LAYER_WARP
+  refinement_metrics->depth_layer_warp_enabled = true;
+#else
   refinement_metrics->depth_local_warp_enabled = true;
+#endif
   for (size_t current_index = 1; current_index < patches->size();
        ++current_index) {
     GuidedPatch& previous = (*patches)[current_index - 1];
@@ -3614,7 +3819,11 @@ void apply_guided_depth_local_warp(
     if (previous.depth.empty() || current.depth.empty()) {
       continue;
     }
+#if GIRO360_EXPERIMENT_DEPTH_LAYER_WARP
+    refinement_metrics->depth_layer_warp_candidate_count += 1;
+#else
     refinement_metrics->depth_local_warp_candidate_count += 1;
+#endif
     int match_count = 0;
     double rms_before = 0.0;
     double rms_after = 0.0;
@@ -3629,9 +3838,22 @@ void apply_guided_depth_local_warp(
         &rms_after,
         &max_displacement);
     if (!applied) {
+#if GIRO360_EXPERIMENT_DEPTH_LAYER_WARP
+      refinement_metrics->depth_layer_warp_rejected_count += 1;
+#else
       refinement_metrics->depth_local_warp_rejected_count += 1;
+#endif
       continue;
     }
+#if GIRO360_EXPERIMENT_DEPTH_LAYER_WARP
+    refinement_metrics->depth_layer_warp_applied_count += 1;
+    refinement_metrics->depth_layer_warp_match_count += match_count;
+    refinement_metrics->total_depth_layer_warp_rms_before += rms_before;
+    refinement_metrics->total_depth_layer_warp_rms_after += rms_after;
+    refinement_metrics->max_depth_layer_warp_displacement = std::max(
+        refinement_metrics->max_depth_layer_warp_displacement,
+        max_displacement);
+#else
     refinement_metrics->depth_local_warp_applied_count += 1;
     refinement_metrics->depth_local_warp_match_count += match_count;
     refinement_metrics->total_depth_local_warp_rms_before += rms_before;
@@ -3639,6 +3861,7 @@ void apply_guided_depth_local_warp(
     refinement_metrics->max_depth_local_warp_displacement = std::max(
         refinement_metrics->max_depth_local_warp_displacement,
         max_displacement);
+#endif
   }
 }
 #endif
@@ -4149,7 +4372,7 @@ cv::Mat build_guided_cylindrical_fallback(
       refinement_metrics);
 #endif
 
-#if GIRO360_EXPERIMENT_DEPTH_LOCAL_WARP
+#if GIRO360_EXPERIMENT_DEPTH_LOCAL_WARP || GIRO360_EXPERIMENT_DEPTH_LAYER_WARP
   apply_guided_depth_local_warp(
       &guided_patches,
       panorama_width,
