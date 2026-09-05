@@ -1,3 +1,11 @@
+## 0.0.2
+
+- Select only frames successfully written to the video and extract at the exact recorded timestamp; verify the returned timestamp before associating pixels with camera pose.
+- Wait for normal ARKit tracking before establishing the capture origin.
+- Preserve intrinsics, transforms, image dimensions and recording status in the video timeline.
+- Add lossless JSON-compatible capture/frame snapshots for consumer session recovery.
+- Validate encoded frame identities and timestamps with a macOS AVFoundation integration check (`swift tool/verify_video_timestamps.swift`).
+
 ## 0.0.1
 
 - Extrai captura ARKit por video para um plugin Flutter reutilizavel.

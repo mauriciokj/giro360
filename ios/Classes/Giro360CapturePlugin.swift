@@ -453,6 +453,8 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
     currentRoll = roll
 
     if firstFrameTimestamp == nil {
+      // Establish the origin only after ARKit has a usable world reference.
+      guard case .normal = frame.camera.trackingState else { return }
       firstFrameTimestamp = frame.timestamp
       firstFrameDate = Date()
       initialPosition = position
@@ -461,14 +463,14 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       lastFrameTimestamp = frame.timestamp
       do {
         try startVideoWriter(pixelBuffer: frame.capturedImage)
-        appendFrameToVideo(frame)
+        _ = appendFrameToVideo(frame)
       } catch {
         failCapture("Não foi possível iniciar o vídeo: \(error.localizedDescription)")
       }
       return
     }
 
-    appendFrameToVideo(frame)
+    let recorded = appendFrameToVideo(frame)
     guard running else { return }
 
     if let origin = initialPosition {
@@ -502,6 +504,11 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       "translationMeters": currentTranslationMeters,
       "angularSpeedRadiansPerSecond": currentAngularSpeed,
       "trackingState": trackingState,
+      "recorded": recorded,
+      "cameraIntrinsics": flattened(frame.camera.intrinsics),
+      "cameraTransform": flattened(frame.camera.transform),
+      "imageWidth": frame.camera.imageResolution.width,
+      "imageHeight": frame.camera.imageResolution.height,
     ])
 
     if direction == 0, abs(unwrappedYaw) >= 0.18 {
@@ -534,7 +541,8 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       return
     }
 
-    guard case .normal = frame.camera.trackingState,
+    guard recorded,
+          case .normal = frame.camera.trackingState,
           currentTranslationMeters <= 0.18,
           directedProgress >= maxProgress - 0.08,
           frame.timestamp - lastSelectionTimestamp >= 0.08 else {
@@ -755,17 +763,17 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
     videoWriterAdaptor = adaptor
   }
 
-  private func appendFrameToVideo(_ frame: ARFrame) {
+  private func appendFrameToVideo(_ frame: ARFrame) -> Bool {
     guard let startedAt = firstFrameTimestamp,
           let writer = videoWriter,
           let input = videoWriterInput,
           let adaptor = videoWriterAdaptor,
           writer.status == .writing else {
-      return
+      return false
     }
     guard input.isReadyForMoreMediaData else {
       droppedVideoFrameCount += 1
-      return
+      return false
     }
     let presentationTime = CMTime(
       seconds: max(0, frame.timestamp - startedAt),
@@ -773,6 +781,7 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
     )
     if adaptor.append(frame.capturedImage, withPresentationTime: presentationTime) {
       recordedVideoFrameCount += 1
+      return true
     } else {
       droppedVideoFrameCount += 1
       if writer.status == .failed {
@@ -780,6 +789,7 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
           "O encoder interrompeu a gravação: \(writer.error?.localizedDescription ?? "erro desconhecido")"
         )
       }
+      return false
     }
   }
 
@@ -790,8 +800,8 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
     let asset = AVURLAsset(url: videoURL)
     let generator = AVAssetImageGenerator(asset: asset)
     generator.appliesPreferredTrackTransform = true
-    generator.requestedTimeToleranceBefore = CMTime(value: 1, timescale: 30)
-    generator.requestedTimeToleranceAfter = CMTime(value: 1, timescale: 30)
+    generator.requestedTimeToleranceBefore = .zero
+    generator.requestedTimeToleranceAfter = .zero
 
     var extractedCount = 0
     for candidate in selectedCandidates {
@@ -801,6 +811,15 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       )
       var actualTime = CMTime.zero
       let cgImage = try generator.copyCGImage(at: time, actualTime: &actualTime)
+      // Both the encoder and selection use the same 600 Hz presentation clock.
+      // Never attach a neighbouring frame's pixels to this candidate's pose.
+      guard abs(CMTimeGetSeconds(CMTimeSubtract(actualTime, time))) < 1.0 / 1200.0 else {
+        throw NSError(
+          domain: "Giro360Arkit",
+          code: 5,
+          userInfo: [NSLocalizedDescriptionKey: "A imagem extraída não corresponde à posição registrada."]
+        )
+      }
       guard let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.94) else {
         continue
       }

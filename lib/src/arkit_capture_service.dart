@@ -192,6 +192,41 @@ class Giro360CaptureStatus {
   final int rejectedTranslationFrameCount;
   final List<Giro360VideoFrame> frames;
 
+  /// A lossless snapshot suitable for persisting a capture session.
+  Map<String, Object?> toMap() => {
+        'running': running,
+        'finishing': finishing,
+        'complete': complete,
+        'failed': failed,
+        'message': message,
+        'trackingState': trackingState,
+        'direction': direction,
+        'movingWrongDirection': movingWrongDirection,
+        'progress': progress,
+        'progressDegrees': progressDegrees,
+        'completedLaps': completedLaps,
+        'requiredLaps': requiredLaps,
+        'binCount': binCount,
+        'selectedCount': selectedCount,
+        'selectedLap': selectedLap,
+        'lapCandidateCounts': lapCandidateCounts,
+        'missingBins': missingBins,
+        'currentPitchDegrees': currentPitchDegrees,
+        'currentRollDegrees': currentRollDegrees,
+        'currentAngularSpeed': currentAngularSpeed,
+        'currentTranslationMeters': currentTranslationMeters,
+        'maxTranslationMeters': maxTranslationMeters,
+        'processedFrameCount': processedFrameCount,
+        'encodedCandidateCount': encodedCandidateCount,
+        'recordedVideoFrameCount': recordedVideoFrameCount,
+        'droppedVideoFrameCount': droppedVideoFrameCount,
+        'videoPath': videoPath,
+        'videoTimelinePath': videoTimelinePath,
+        'rejectedTrackingFrameCount': rejectedTrackingFrameCount,
+        'rejectedTranslationFrameCount': rejectedTranslationFrameCount,
+        'frames': frames.map((frame) => frame.toMap()).toList(growable: false),
+      };
+
   int get activeLap {
     if (complete) {
       return requiredLaps;
@@ -265,6 +300,28 @@ class Giro360VideoFrame {
   final double videoTimeSeconds;
   final List<double> cameraIntrinsics;
   final List<double> cameraTransform;
+
+  /// A lossless snapshot suitable for persisting a capture session.
+  Map<String, Object?> toMap() => {
+        'binIndex': binIndex,
+        'lapIndex': lapIndex,
+        'filePath': filePath,
+        'targetYawRadians': targetYawRadians,
+        'relativeYawRadians': relativeYawRadians,
+        'pitchRadians': pitchRadians,
+        'rollRadians': rollRadians,
+        'translationMeters': translationMeters,
+        'qualityScore': qualityScore,
+        'sharpnessScore': sharpnessScore,
+        'angularSpeedRadiansPerSecond': angularSpeedRadiansPerSecond,
+        'centerErrorRadians': centerErrorRadians,
+        'trackingState': trackingState,
+        'capturedAt': capturedAt.toUtc().toIso8601String(),
+        'frameTimestampSeconds': frameTimestampSeconds,
+        'videoTimeSeconds': videoTimeSeconds,
+        'cameraIntrinsics': cameraIntrinsics,
+        'cameraTransform': cameraTransform,
+      };
 }
 
 bool _bool(Map<Object?, Object?> map, String key) => map[key] == true;
