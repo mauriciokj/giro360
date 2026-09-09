@@ -1,3 +1,10 @@
+## 0.0.3
+
+- Ignore replayed progress, frames and terminal events from earlier capture directories.
+- iOS event subscriptions no longer replay a finished or failed capture on listen.
+- Preserve failures belonging to the new capture, including before the start method replies.
+- Use a fresh session directory for each run to keep results and event ownership separate.
+
 ## 0.0.2
 
 - Select only frames successfully written to the video and extract at the exact recorded timestamp; verify the returned timestamp before associating pixels with camera pose.

@@ -44,6 +44,55 @@ void main() {
         ]));
   });
 
+  test('ignores replayed status and delayed results from a previous directory',
+      () async {
+    final directory = await Directory.systemTemp.createTemp('giro360_retry_');
+    addTearDown(() => directory.delete(recursive: true));
+    final backend = _ReplayCaptureBackend();
+    final stitcher = _FakeStitchBackend();
+    final controller = Giro360CaptureController(
+      captureBackend: backend,
+      stitchBackend: stitcher,
+    );
+    addTearDown(controller.dispose);
+    addTearDown(backend.updates.close);
+    final events = <Giro360CaptureEvent>[];
+    final sub = controller.events.listen(events.add);
+    addTearDown(sub.cancel);
+    final started =
+        controller.events.firstWhere((e) => e.status?.running == true);
+    final run = controller.start(sessionDirectory: directory);
+    final resultFuture = expectLater(run, completes);
+    await started;
+    backend.updates.add(
+        _completeStatus('/previous-session/missing.jpg', '/previous-session'));
+    final frame = File('${directory.path}/video_000.jpg')
+      ..writeAsBytesSync([1]);
+    backend.updates.add(_completeStatus(frame.path, directory.path));
+    await resultFuture;
+    expect(events.where((e) => e.stage == Giro360CaptureStage.failed), isEmpty);
+    expect(
+        events.where((e) =>
+            e.status?.videoPath.startsWith('/previous-session/') == true),
+        isEmpty);
+    expect(stitcher.telemetry.length, 1);
+  });
+
+  test('preserves real native failures arriving before the start reply',
+      () async {
+    final directory = await Directory.systemTemp.createTemp('giro360_failure_');
+    addTearDown(() => directory.delete(recursive: true));
+    final backend = _ReplayCaptureBackend(failCurrentRun: true);
+    final controller = Giro360CaptureController(captureBackend: backend);
+    addTearDown(controller.dispose);
+    addTearDown(backend.updates.close);
+    await expectLater(
+        controller.start(sessionDirectory: directory),
+        throwsA(isA<Giro360CaptureException>().having((e) => e.toString(),
+            'message', contains('current camera failure'))));
+    await backend.startReturned.future;
+  });
+
   test('rejects a second capture while one is running', () async {
     final directory = await Directory.systemTemp.createTemp('giro360_test_');
     addTearDown(() => directory.delete(recursive: true));
@@ -146,4 +195,42 @@ Giro360CaptureStatus _completeStatus(String framePath, String directory) {
       },
     ],
   });
+}
+
+class _ReplayCaptureBackend implements Giro360CaptureBackend {
+  _ReplayCaptureBackend({this.failCurrentRun = false});
+  final bool failCurrentRun;
+  final startReturned = Completer<void>();
+  late final StreamController<Giro360CaptureStatus> updates =
+      StreamController<Giro360CaptureStatus>.broadcast(onListen: () {
+    updates.add(Giro360CaptureStatus.fromMap({
+      'failed': true,
+      'message': 'previous camera failure',
+      'videoPath': '/previous-session/giro360_capture.mp4',
+      'recordedVideoFrameCount': 4010,
+    }));
+  });
+  @override
+  Stream<Giro360CaptureStatus> get events => updates.stream;
+  @override
+  Future<bool> isSupported() async => true;
+  @override
+  Future<void> cancelCapture() async {}
+  @override
+  Future<Giro360CaptureStatus> status() async => throw UnimplementedError();
+  @override
+  Future<void> startCapture(
+      {required Directory sessionDirectory,
+      int binCount = 30,
+      int requiredLaps = 2}) async {
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    updates.add(Giro360CaptureStatus.fromMap({
+      'running': !failCurrentRun,
+      'failed': failCurrentRun,
+      'message': failCurrentRun ? 'current camera failure' : 'current session',
+      'videoPath': '${sessionDirectory.path}/giro360_capture.mp4',
+    }));
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    startReturned.complete();
+  }
 }

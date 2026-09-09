@@ -88,7 +88,13 @@ public final class Giro360CapturePlugin: NSObject, FlutterPlugin, FlutterStreamH
     eventSink events: @escaping FlutterEventSink
   ) -> FlutterError? {
     eventSink = events
-    publish(coordinator.status())
+    // Terminal snapshots belong to the previous run. A new run emits its own
+    // initial status after resetting the coordinator; explicit status() remains
+    // available to clients that need the last result.
+    let status = coordinator.status()
+    if status["running"] as? Bool == true || status["finishing"] as? Bool == true {
+      publish(status)
+    }
     return nil
   }
 

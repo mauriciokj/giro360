@@ -199,6 +199,23 @@ class Giro360CaptureController {
     if (!isRunning || _cancelRequested) {
       return;
     }
+    // EventChannel can replay the native coordinator's last session on listen.
+    // Compare normalized paths (including iOS /var symlinks) before exposing any
+    // old frames or terminal state to the host app. Each run owns a directory.
+    if (status.videoPath.isNotEmpty && _sessionDirectory != null) {
+      final eventDirectory = File(status.videoPath).parent;
+      String normalized(Directory directory) {
+        try {
+          return directory.resolveSymbolicLinksSync();
+        } on FileSystemException {
+          return directory.absolute.uri.normalizePath().toFilePath();
+        }
+      }
+
+      if (normalized(eventDirectory) != normalized(_sessionDirectory!)) {
+        return;
+      }
+    }
     if (status.failed) {
       final error = Giro360CaptureException(status.message);
       _emit(
