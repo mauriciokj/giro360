@@ -1,3 +1,12 @@
+## 0.0.4
+
+- Automatically profile the saved video and choose coherent keyframes after capture; default to 60 images.
+- Preserve all normally tracked recorded sectors, including frames farther from the session origin, and score relative camera movement and the circular seam.
+- Stream AVFoundation decoding and thumbnail sharpness analysis without retaining full-resolution video frames in memory.
+- Save selection timings, per-lap scores, exact encoded timestamps and source camera metadata.
+- Cancel processing safely and isolate callbacks between capture attempts; preserve the original video on failure.
+- Add `selectRecordedVideo` for SDK recovery and reproducible device validation, always writing to a fresh output directory.
+
 ## 0.0.3
 
 - Ignore replayed progress, frames and terminal events from earlier capture directories.

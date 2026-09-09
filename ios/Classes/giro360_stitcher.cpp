@@ -3475,6 +3475,41 @@ cv::Mat force_equirectangular_ratio(const cv::Mat& panorama) {
 
 GIRO360_EXPORT void giro360_stitch_link_anchor() {}
 
+// Bounded thumbnail analysis shared by the iOS post-capture selector and replay.
+GIRO360_EXPORT int giro360_frame_quality_bgra(
+    const unsigned char* pixels, int width, int height, int stride,
+    int clockwiseQuarterTurns, double* sharpness, double* overlapSharpness) {
+  if (!pixels || !sharpness || !overlapSharpness || width < 8 || height < 8 ||
+      stride < width * 4 || clockwiseQuarterTurns < 0 || clockwiseQuarterTurns > 3) {
+    return -1;
+  }
+  try {
+    cv::Mat source(height, width, CV_8UC4, const_cast<unsigned char*>(pixels), stride);
+    cv::Mat small, oriented, gray, laplacian;
+    const bool sideways = clockwiseQuarterTurns % 2 != 0;
+    cv::resize(source, small, sideways ? cv::Size(480, 360) : cv::Size(360, 480),
+               0, 0, cv::INTER_AREA);
+    if (clockwiseQuarterTurns == 1) cv::rotate(small, oriented, cv::ROTATE_90_CLOCKWISE);
+    else if (clockwiseQuarterTurns == 2) cv::rotate(small, oriented, cv::ROTATE_180);
+    else if (clockwiseQuarterTurns == 3) cv::rotate(small, oriented, cv::ROTATE_90_COUNTERCLOCKWISE);
+    else oriented = small;
+    cv::cvtColor(oriented, gray, cv::COLOR_BGRA2GRAY);
+    cv::Laplacian(gray, laplacian, CV_32F);
+    const auto variance = [](const cv::Mat& image) {
+      cv::Scalar mean, stddev;
+      cv::meanStdDev(image, mean, stddev);
+      return stddev[0] * stddev[0];
+    };
+    *sharpness = variance(laplacian);
+    const double left = variance(laplacian.colRange(90, 180));
+    const double right = variance(laplacian.colRange(180, 270));
+    *overlapSharpness = 2 * left * right / std::max(left + right, 1e-6);
+    return 0;
+  } catch (...) {
+    return -2;
+  }
+}
+
 int run_stitch(
     const char** image_paths,
     int image_count,

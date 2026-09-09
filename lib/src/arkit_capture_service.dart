@@ -45,7 +45,7 @@ class Giro360NativeCaptureService implements Giro360CaptureBackend {
   @override
   Future<void> startCapture({
     required Directory sessionDirectory,
-    int binCount = 30,
+    int binCount = 60,
     int requiredLaps = 2,
   }) {
     return _methodChannel.invokeMethod<void>('startCapture', {
@@ -68,6 +68,56 @@ class Giro360NativeCaptureService implements Giro360CaptureBackend {
   Future<void> cancelCapture() {
     return _methodChannel.invokeMethod<void>('cancelCapture');
   }
+
+  /// Reuses the automatic iOS selector for recovery and repeatable validation.
+  /// [outputDirectory] must not exist. Source video and telemetry are preserved.
+  /// Older timelines may lack absolute capture timestamps; those remain unknown.
+  Future<Giro360RecordedVideoSelection> selectRecordedVideo({
+    required File videoFile,
+    required File timelineFile,
+    required Directory outputDirectory,
+    int binCount = 60,
+    int requiredLaps = 2,
+  }) async {
+    final value = await _methodChannel.invokeMethod<Object?>(
+      'selectRecordedVideo',
+      {
+        'videoPath': videoFile.path,
+        'timelinePath': timelineFile.path,
+        'outputDirectory': outputDirectory.path,
+        'binCount': binCount,
+        'requiredLaps': requiredLaps,
+      },
+    );
+    if (value is! Map<Object?, Object?>) {
+      throw const FormatException('Resultado de seleção inválido.');
+    }
+    return Giro360RecordedVideoSelection.fromMap(value);
+  }
+}
+
+class Giro360RecordedVideoSelection {
+  const Giro360RecordedVideoSelection({
+    required this.frames,
+    required this.diagnostics,
+  });
+
+  factory Giro360RecordedVideoSelection.fromMap(Map<Object?, Object?> map) {
+    return Giro360RecordedVideoSelection(
+      frames: _objectList(map['frames'])
+          .whereType<Map<Object?, Object?>>()
+          .map(Giro360VideoFrame.fromMap)
+          .toList(growable: false),
+      diagnostics: {
+        for (final entry in map.entries)
+          if (entry.key is String && entry.key != 'frames')
+            entry.key! as String: entry.value,
+      },
+    );
+  }
+
+  final List<Giro360VideoFrame> frames;
+  final Map<String, Object?> diagnostics;
 }
 
 class Giro360CapturePreview extends StatelessWidget {
@@ -119,6 +169,7 @@ class Giro360CaptureStatus {
     required this.rejectedTrackingFrameCount,
     required this.rejectedTranslationFrameCount,
     required this.frames,
+    this.processingDiagnostics = const {},
   });
 
   factory Giro360CaptureStatus.fromMap(Map<Object?, Object?> map) {
@@ -153,6 +204,9 @@ class Giro360CaptureStatus {
       videoTimelinePath: _string(map, 'videoTimelinePath'),
       rejectedTrackingFrameCount: _int(map, 'rejectedTrackingFrameCount'),
       rejectedTranslationFrameCount: _int(map, 'rejectedTranslationFrameCount'),
+      processingDiagnostics: Map<String, Object?>.from(
+        map['processingDiagnostics'] as Map? ?? const {},
+      ),
       frames: _objectList(map['frames'])
           .whereType<Map<Object?, Object?>>()
           .map(Giro360VideoFrame.fromMap)
@@ -192,6 +246,9 @@ class Giro360CaptureStatus {
   final int rejectedTranslationFrameCount;
   final List<Giro360VideoFrame> frames;
 
+  /// Post-capture selection timings and per-lap geometry scores.
+  final Map<String, Object?> processingDiagnostics;
+
   /// A lossless snapshot suitable for persisting a capture session.
   Map<String, Object?> toMap() => {
         'running': running,
@@ -225,6 +282,7 @@ class Giro360CaptureStatus {
         'rejectedTrackingFrameCount': rejectedTrackingFrameCount,
         'rejectedTranslationFrameCount': rejectedTranslationFrameCount,
         'frames': frames.map((frame) => frame.toMap()).toList(growable: false),
+        'processingDiagnostics': processingDiagnostics,
       };
 
   int get activeLap {
@@ -255,6 +313,10 @@ class Giro360VideoFrame {
     required this.videoTimeSeconds,
     required this.cameraIntrinsics,
     required this.cameraTransform,
+    this.encodedFrameIndex,
+    this.encodedPtsSeconds,
+    this.overlapSharpnessScore,
+    this.selectionSource,
   });
 
   factory Giro360VideoFrame.fromMap(Map<Object?, Object?> map) {
@@ -279,6 +341,10 @@ class Giro360VideoFrame {
       videoTimeSeconds: _double(map, 'videoTimeSeconds'),
       cameraIntrinsics: _doubleList(map['cameraIntrinsics']),
       cameraTransform: _doubleList(map['cameraTransform']),
+      encodedFrameIndex: (map['frameIndex'] as num?)?.toInt(),
+      encodedPtsSeconds: (map['ptsSeconds'] as num?)?.toDouble(),
+      overlapSharpnessScore: (map['overlapSharpnessScore'] as num?)?.toDouble(),
+      selectionSource: map['selectionSource'] as String?,
     );
   }
 
@@ -300,6 +366,10 @@ class Giro360VideoFrame {
   final double videoTimeSeconds;
   final List<double> cameraIntrinsics;
   final List<double> cameraTransform;
+  final int? encodedFrameIndex;
+  final double? encodedPtsSeconds;
+  final double? overlapSharpnessScore;
+  final String? selectionSource;
 
   /// A lossless snapshot suitable for persisting a capture session.
   Map<String, Object?> toMap() => {
@@ -321,6 +391,11 @@ class Giro360VideoFrame {
         'videoTimeSeconds': videoTimeSeconds,
         'cameraIntrinsics': cameraIntrinsics,
         'cameraTransform': cameraTransform,
+        if (encodedFrameIndex != null) 'frameIndex': encodedFrameIndex,
+        if (encodedPtsSeconds != null) 'ptsSeconds': encodedPtsSeconds,
+        if (overlapSharpnessScore != null)
+          'overlapSharpnessScore': overlapSharpnessScore,
+        if (selectionSource != null) 'selectionSource': selectionSource,
       };
 }
 

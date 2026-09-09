@@ -1,7 +1,7 @@
 # giro360_capture
 
 Plugin Flutter reutilizavel para capturar um panorama cilindrico no iPhone.
-Ele grava duas voltas com ARKit, escolhe 30 keyframes de uma unica volta
+Ele grava duas voltas com ARKit, avalia o vídeo ao terminar e escolhe 60 keyframes de uma única volta
 coerente e executa a costura OpenCV no proprio aparelho.
 
 ## O que o pacote encapsula
@@ -73,7 +73,7 @@ final result = await controller.start(
   sessionDirectory: session,
   config: const Giro360CaptureConfig(
     requiredLaps: 2,
-    binCount: 30,
+    binCount: 60,
     alignmentMode: GuidedAlignmentMode.videoRefine,
   ),
 );
@@ -148,3 +148,10 @@ flutter build ios --release --no-codesign
 
 O motor C++ e grande por concentrar os experimentos de alinhamento. A API
 publica usa `videoRefine`, a alternativa visualmente validada no iPhone 16e.
+
+## Seleção automática após gravar
+
+Desde a versão 0.0.4, o SDK analisa o vídeo salvo e seleciona até 60 imagens por
+padrão antes de montar. A aplicação recebe progresso durante a preparação e o
+resultado final pelo mesmo controlador. Veja [o fluxo, os arquivos e a validação
+no dispositivo](docs/processamento-automatico.md).

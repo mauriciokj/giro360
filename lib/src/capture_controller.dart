@@ -16,7 +16,7 @@ enum Giro360CaptureStage {
 
 class Giro360CaptureConfig {
   const Giro360CaptureConfig({
-    this.binCount = 30,
+    this.binCount = 60,
     this.requiredLaps = 2,
     this.outputFileName = 'giro360_panorama.jpg',
     this.fallbackFillMode = GuidedFallbackFillMode.blackBands,

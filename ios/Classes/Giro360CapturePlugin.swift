@@ -16,6 +16,8 @@ public final class Giro360CapturePlugin: NSObject, FlutterPlugin, FlutterStreamH
   private var eventSink: FlutterEventSink?
   private var ownsIdleTimer = false
   private var previousIdleTimerState = false
+  private var recordedSelectionActive = false
+  private var recordedSelectionCancellation = Giro360ProcessingCancellation()
 
   public static func register(with registrar: FlutterPluginRegistrar) {
     giro360StitchLinkAnchor()
@@ -44,6 +46,10 @@ public final class Giro360CapturePlugin: NSObject, FlutterPlugin, FlutterStreamH
     case "isSupported":
       result(ARWorldTrackingConfiguration.isSupported)
     case "startCapture":
+      guard !recordedSelectionActive else {
+        result(FlutterError(code: "busy", message: "Aguarde o processamento do vídeo.", details: nil))
+        return
+      }
       guard let arguments = call.arguments as? [String: Any],
             let directoryPath = arguments["directoryPath"] as? String else {
         result(
@@ -55,7 +61,7 @@ public final class Giro360CapturePlugin: NSObject, FlutterPlugin, FlutterStreamH
         )
         return
       }
-      let binCount = max(24, min(90, arguments["binCount"] as? Int ?? 30))
+      let binCount = max(24, min(90, arguments["binCount"] as? Int ?? 60))
       let requiredLaps = max(1, min(3, arguments["requiredLaps"] as? Int ?? 2))
       do {
         try coordinator.startCapture(
@@ -76,8 +82,49 @@ public final class Giro360CapturePlugin: NSObject, FlutterPlugin, FlutterStreamH
     case "status":
       result(coordinator.status())
     case "cancelCapture":
+      recordedSelectionCancellation.cancel()
       coordinator.cancelCapture()
       result(nil)
+    case "selectRecordedVideo":
+      let current = coordinator.status()
+      guard !recordedSelectionActive, current["running"] as? Bool != true,
+            current["finishing"] as? Bool != true else {
+        result(FlutterError(code: "busy", message: "Já existe uma captura ou seleção em andamento.", details: nil))
+        return
+      }
+      guard let arguments = call.arguments as? [String: Any],
+            let video = arguments["videoPath"] as? String,
+            let timeline = arguments["timelinePath"] as? String,
+            let output = arguments["outputDirectory"] as? String else {
+        result(FlutterError(code: "invalid_arguments", message: "Informe o vídeo, a telemetria e uma nova pasta de saída.", details: nil))
+        return
+      }
+      recordedSelectionActive = true
+      recordedSelectionCancellation = Giro360ProcessingCancellation()
+      let cancellation = recordedSelectionCancellation
+      let bins = arguments["binCount"] as? Int ?? 60
+      let laps = arguments["requiredLaps"] as? Int ?? 2
+      updateIdleTimer(status: ["finishing": true])
+      DispatchQueue.global(qos: .userInitiated).async {
+        let outcome: Result<[String: Any], Error> = Result {
+          let data = try Data(contentsOf: URL(fileURLWithPath: timeline))
+          guard let samples = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw Giro360VideoProcessor.error("Formato de telemetria inválido.")
+          }
+          return try Giro360VideoProcessor.process(video: URL(fileURLWithPath: video),
+            timeline: samples, output: URL(fileURLWithPath: output), bins: bins, laps: laps,
+            cancellation: cancellation)
+        }
+        DispatchQueue.main.async {
+          self.recordedSelectionActive = false
+          self.updateIdleTimer(status: [:])
+          switch outcome {
+          case .success(let value): result(value)
+          case .failure(let error):
+            result(FlutterError(code: "video_selection_failed", message: error.localizedDescription, details: nil))
+          }
+        }
+      }
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -248,7 +295,10 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
   private var videoWriterAdaptor: AVAssetWriterInputPixelBufferAdaptor?
   private var videoTimeline: [[String: Any]] = []
   private var candidates: [Int: Giro360ArkitFrameCandidate] = [:]
-  private var finalCandidates: [Int: Giro360ArkitFrameCandidate] = [:]
+  private var finalFrames: [[String: Any]] = []
+  private var processingDiagnostics: [String: Any] = [:]
+  private var processingCancellation = Giro360ProcessingCancellation()
+  private var generation = UUID()
   private var selectedLapIndex: Int?
   private var lastStatusEmissionTimestamp: TimeInterval = 0
 
@@ -276,10 +326,16 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       withIntermediateDirectories: true
     )
 
-    stateQueue.sync {
+    try stateQueue.sync {
+      guard !running, !finishing else {
+        throw Giro360VideoProcessor.error("Já existe uma captura em andamento.")
+      }
       self.directoryPath = directoryPath
       self.binCount = binCount
       self.requiredLaps = requiredLaps
+      processingCancellation.cancel()
+      processingCancellation = Giro360ProcessingCancellation()
+      generation = UUID()
       running = true
       finishing = false
       complete = false
@@ -315,7 +371,8 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       videoWriterAdaptor = nil
       videoTimeline.removeAll(keepingCapacity: true)
       candidates.removeAll(keepingCapacity: true)
-      finalCandidates.removeAll(keepingCapacity: true)
+      finalFrames.removeAll(keepingCapacity: true)
+      processingDiagnostics = [:]
       selectedLapIndex = nil
       lastStatusEmissionTimestamp = 0
 
@@ -343,6 +400,8 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
   func cancelCapture() {
     stateQueue.async {
       guard self.running || self.finishing else { return }
+      self.processingCancellation.cancel()
+      self.generation = UUID()
       self.running = false
       self.finishing = false
       self.message = "Captura cancelada."
@@ -363,11 +422,9 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
     let totalRadians = Double(requiredLaps) * Double.pi * 2
     let progress = totalRadians > 0 ? min(1, maxProgress / totalRadians) : 0
     let coherentSelection = bestCoherentLapCandidates()
-    let statusCandidates = finalCandidates.isEmpty
-        ? coherentSelection.frames
-        : finalCandidates.values.sorted { $0.binIndex < $1.binIndex }
-    let selectedFrames = statusCandidates.map(\.flutterValue)
-    let selectedBins = Set(statusCandidates.map(\.binIndex))
+    let selectedFrames = finalFrames.isEmpty
+        ? coherentSelection.frames.map(\.flutterValue) : finalFrames
+    let selectedBins = Set(selectedFrames.compactMap { $0["binIndex"] as? Int })
     let missingBins = (0..<binCount).filter { !selectedBins.contains($0) }
     let lapCandidateCounts = (0..<requiredLaps).map { lapIndex in
       candidates.values.filter { $0.lapIndex == lapIndex }.count
@@ -395,7 +452,7 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       "completedLaps": min(requiredLaps, Int(maxProgress / (Double.pi * 2))),
       "requiredLaps": requiredLaps,
       "binCount": binCount,
-      "selectedCount": statusCandidates.count,
+      "selectedCount": selectedFrames.count,
       "selectedLap": selectedLapIndex.map { $0 + 1 }
         ?? coherentSelection.lapIndex.map { $0 + 1 }
         ?? 0,
@@ -415,6 +472,7 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       "rejectedTrackingFrameCount": rejectedTrackingFrameCount,
       "rejectedTranslationFrameCount": rejectedTranslationFrameCount,
       "frames": selectedFrames,
+      "processingDiagnostics": processingDiagnostics,
     ]
   }
 
@@ -504,6 +562,9 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
 
     videoTimeline.append([
       "videoTimeSeconds": max(0, frame.timestamp - (firstFrameTimestamp ?? frame.timestamp)),
+      "frameTimestampSeconds": frame.timestamp,
+      "captureUnixTimeSeconds": (firstFrameDate ?? Date()).timeIntervalSince1970
+        + frame.timestamp - (firstFrameTimestamp ?? frame.timestamp),
       "relativeYawRadians": unwrappedYaw,
       "pitchRadians": pitch,
       "rollRadians": roll,
@@ -549,7 +610,6 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
 
     guard recorded,
           case .normal = frame.camera.trackingState,
-          currentTranslationMeters <= 0.18,
           directedProgress >= maxProgress - 0.08,
           frame.timestamp - lastSelectionTimestamp >= 0.08 else {
       return
@@ -652,64 +712,55 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
     guard !finishing else { return }
     running = false
     finishing = true
-    message = "Salvando o vídeo das duas voltas..."
+    message = "Salvando o vídeo das voltas…"
     session.pause()
     emitStatus(force: true)
-
-    guard let writer = videoWriter,
-          let writerInput = videoWriterInput else {
+    guard let writer = videoWriter, let input = videoWriterInput else {
       failCapture("O gravador de vídeo não foi inicializado.")
       return
     }
-
-    let coherentSelection = bestCoherentLapCandidates()
-    let selectedCandidates = coherentSelection.frames
-    selectedLapIndex = coherentSelection.lapIndex
-    finalCandidates = Dictionary(
-      uniqueKeysWithValues: selectedCandidates.map { ($0.binIndex, $0) }
-    )
+    let run = generation
+    let cancellation = processingCancellation
     let timeline = videoTimeline
-    let outputURL = URL(fileURLWithPath: videoPath)
+    let videoURL = URL(fileURLWithPath: videoPath)
     let timelineURL = URL(fileURLWithPath: videoTimelinePath)
-    writerInput.markAsFinished()
+    let output = URL(fileURLWithPath: directoryPath).appendingPathComponent("selected_frames")
+    let bins = binCount, laps = requiredLaps, captureDirection = direction
+    input.markAsFinished()
     writer.finishWriting { [weak self] in
       guard let self else { return }
-      guard writer.status == .completed else {
-        let detail = writer.error?.localizedDescription ?? "erro desconhecido"
-        self.stateQueue.async {
-          self.failCapture("Falha ao salvar o vídeo: \(detail)")
-        }
-        return
-      }
-
       self.imageQueue.async {
         do {
-          let timelineData = try JSONSerialization.data(
-            withJSONObject: timeline,
-            options: [.prettyPrinted, .sortedKeys]
-          )
+          try cancellation.check()
+          guard writer.status == .completed else {
+            throw writer.error ?? Giro360VideoProcessor.error("Falha ao salvar o vídeo.")
+          }
+          let timelineData = try JSONSerialization.data(withJSONObject: timeline, options: [.prettyPrinted, .sortedKeys])
           try timelineData.write(to: timelineURL, options: .atomic)
-          let extractedCount = try self.extractSelectedFrames(
-            selectedCandidates,
-            from: outputURL
-          )
-          self.stateQueue.async {
-            self.encodedCandidateCount = extractedCount
-            self.finishing = false
-            let minimumFrameCount = max(24, Int(Double(self.binCount) * 0.75))
-            if extractedCount < minimumFrameCount {
-              self.failed = true
-              self.message = "O vídeo foi salvo, mas só \(extractedCount)/\(self.binCount) frames puderam ser extraídos."
-            } else {
-              self.complete = true
-              let selectedLap = (self.selectedLapIndex ?? 0) + 1
-              self.message = "Vídeo salvo. Volta \(selectedLap) selecionada com \(extractedCount) frames."
+          let processed = try Giro360VideoProcessor.process(video: videoURL, timeline: timeline,
+            output: output, bins: bins, laps: laps, direction: captureDirection,
+            cancellation: cancellation) { message in
+              self.stateQueue.async {
+                guard self.generation == run, self.finishing else { return }
+                self.message = message
+                self.emitStatus(force: true)
+              }
             }
+          self.stateQueue.async {
+            guard self.generation == run, self.finishing else { return }
+            self.finalFrames = processed["frames"] as? [[String: Any]] ?? []
+            self.processingDiagnostics = processed.filter { $0.key != "frames" }
+            self.selectedLapIndex = (processed["selectedLap"] as? Int ?? 1) - 1
+            self.encodedCandidateCount = self.finalFrames.count
+            self.finishing = false
+            self.complete = true
+            self.message = "Melhor volta selecionada. Preparando a montagem…"
             self.emitStatus(force: true)
           }
         } catch {
           self.stateQueue.async {
-            self.failCapture("O vídeo foi salvo, mas a extração falhou: \(error.localizedDescription)")
+            guard self.generation == run, self.finishing else { return }
+            self.failCapture("O vídeo foi preservado. \(error.localizedDescription)")
           }
         }
       }
@@ -797,45 +848,6 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       }
       return false
     }
-  }
-
-  private func extractSelectedFrames(
-    _ selectedCandidates: [Giro360ArkitFrameCandidate],
-    from videoURL: URL
-  ) throws -> Int {
-    let asset = AVURLAsset(url: videoURL)
-    let generator = AVAssetImageGenerator(asset: asset)
-    generator.appliesPreferredTrackTransform = true
-    generator.requestedTimeToleranceBefore = .zero
-    generator.requestedTimeToleranceAfter = .zero
-
-    var extractedCount = 0
-    for candidate in selectedCandidates {
-      let time = CMTime(
-        seconds: candidate.videoTime,
-        preferredTimescale: 600
-      )
-      var actualTime = CMTime.zero
-      let cgImage = try generator.copyCGImage(at: time, actualTime: &actualTime)
-      // Both the encoder and selection use the same 600 Hz presentation clock.
-      // Never attach a neighbouring frame's pixels to this candidate's pose.
-      guard abs(CMTimeGetSeconds(CMTimeSubtract(actualTime, time))) < 1.0 / 1200.0 else {
-        throw NSError(
-          domain: "Giro360Arkit",
-          code: 5,
-          userInfo: [NSLocalizedDescriptionKey: "A imagem extraída não corresponde à posição registrada."]
-        )
-      }
-      guard let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.94) else {
-        continue
-      }
-      try data.write(
-        to: URL(fileURLWithPath: candidate.filePath),
-        options: .atomic
-      )
-      extractedCount += 1
-    }
-    return extractedCount
   }
 
   private func bestCoherentLapCandidates()

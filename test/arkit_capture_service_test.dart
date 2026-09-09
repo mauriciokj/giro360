@@ -16,6 +16,35 @@ void main() {
     expect(GuidedAlignmentMode.videoRefine.nativeValue, 4);
     expect(GuidedAlignmentMode.videoRefine.label, 'ORB vídeo coerente');
   });
+
+  test('preserves post-capture timing and encoded frame identity in snapshots',
+      () {
+    final input = _statusMap(complete: true);
+    input['processingDiagnostics'] = {
+      'selectedLap': 2,
+      'profileElapsedSeconds': 7.1,
+      'lapScores': [
+        {'lap': 2, 'score': 0.49}
+      ],
+    };
+    final frame = (input['frames']! as List).single as Map;
+    frame.addAll({
+      'frameIndex': 2181,
+      'ptsSeconds': 36.3666666667,
+      'overlapSharpnessScore': 226.88,
+      'selectionSource': 'post_capture_continuity_v1',
+    });
+    final roundTrip = Giro360CaptureStatus.fromMap(
+      Giro360CaptureStatus.fromMap(input).toMap(),
+    );
+    expect(roundTrip.processingDiagnostics, input['processingDiagnostics']);
+    expect(roundTrip.frames.single.encodedFrameIndex, 2181);
+    expect(roundTrip.frames.single.encodedPtsSeconds, 36.3666666667);
+    expect(
+        roundTrip.frames.single.selectionSource, 'post_capture_continuity_v1');
+    expect(roundTrip.frames.single.overlapSharpnessScore, 226.88);
+    expect(const Giro360CaptureConfig().binCount, 60);
+  });
 }
 
 Map<Object?, Object?> _statusMap({required bool complete}) => {
