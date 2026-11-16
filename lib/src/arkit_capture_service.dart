@@ -169,6 +169,7 @@ class Giro360CaptureStatus {
     required this.rejectedTrackingFrameCount,
     required this.rejectedTranslationFrameCount,
     required this.frames,
+    this.recentTranslationMeters,
     this.processingDiagnostics = const {},
   });
 
@@ -195,6 +196,8 @@ class Giro360CaptureStatus {
       currentRollDegrees: _double(map, 'currentRollDegrees'),
       currentAngularSpeed: _double(map, 'currentAngularSpeed'),
       currentTranslationMeters: _double(map, 'currentTranslationMeters'),
+      recentTranslationMeters:
+          (map['recentTranslationMeters'] as num?)?.toDouble(),
       maxTranslationMeters: _double(map, 'maxTranslationMeters'),
       processedFrameCount: _int(map, 'processedFrameCount'),
       encodedCandidateCount: _int(map, 'encodedCandidateCount'),
@@ -235,6 +238,9 @@ class Giro360CaptureStatus {
   final double currentRollDegrees;
   final double currentAngularSpeed;
   final double currentTranslationMeters;
+  /// Maximum estimated displacement in the last two seconds of normal
+  /// tracking, or null while no reliable window is available.
+  final double? recentTranslationMeters;
   final double maxTranslationMeters;
   final int processedFrameCount;
   final int encodedCandidateCount;
@@ -272,6 +278,7 @@ class Giro360CaptureStatus {
         'currentRollDegrees': currentRollDegrees,
         'currentAngularSpeed': currentAngularSpeed,
         'currentTranslationMeters': currentTranslationMeters,
+        'recentTranslationMeters': recentTranslationMeters,
         'maxTranslationMeters': maxTranslationMeters,
         'processedFrameCount': processedFrameCount,
         'encodedCandidateCount': encodedCandidateCount,

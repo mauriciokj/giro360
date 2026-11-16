@@ -169,7 +169,7 @@ struct Giro360VideoProcessor {
     }
     try cancellation.check()
     let result: [String: Any] = [
-      "selectionVersion": 1, "selectedLap": selected.lapIndex + 1, "binCount": bins,
+      "selectionVersion": 2, "selectedLap": selected.lapIndex + 1, "binCount": bins,
       "frames": frames, "profiledFrameCount": rows.count, "decodedFrameCount": frameIndex,
       "profileElapsedSeconds": profileElapsed, "elapsedSeconds": Date().timeIntervalSince(started),
       "maxMatchedTimestampErrorSeconds": maxTimeError, "direction": sign > 0 ? "right" : "left",

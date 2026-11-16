@@ -1,3 +1,14 @@
+## 0.0.5
+
+- Report recent camera displacement over two seconds of normal ARKit tracking,
+  separately from distance to the start of the session.
+- Use the recent-motion estimate for live guidance without asking for an abrupt
+  return to the original position. Retain the existing origin diagnostics.
+- Recover a chronologically ordered lap when individually preferred frames are
+  out of order but valid candidates exist, preserving the normal selection.
+- Preserve the selected images and verify the result visually: recent motion is
+  a guidance heuristic and does not eliminate parallax or certify quality.
+
 ## 0.0.4
 
 - Automatically profile the saved video and choose coherent keyframes after capture; default to 60 images.

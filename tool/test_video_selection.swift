@@ -32,6 +32,31 @@ struct SelectionTests {
     precondition(Giro360VideoSelector.select(reversedTime, bins:bins, laps:2).isEmpty)
     precondition(Giro360VideoSelector.select([], bins:bins, laps:2).isEmpty)
     print("PASS: coherent displaced lap; full coverage; closing sector; circular distance; temporal order; empty capture")
+    // The best angular match in bin 2 occurred before bin 1. A slightly
+    // off-centre candidate after bin 1 provides a valid chronological lap.
+    let recoveryBins = 24
+    let step = turn / Double(recoveryBins)
+    var recovery: [Giro360ProfiledFrame] = []
+    for bin in 1...recoveryBins {
+      let timestamp = Double(bin)
+      let yaw = Double(bin) * step - 0.002
+      let sample: [String: Any] = ["cameraTransform": [1.0,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1],
+        "pitchRadians": 0.0, "angularSpeedRadiansPerSecond": 0.2]
+      recovery.append(Giro360ProfiledFrame(sample: sample, frameIndex: bin,
+        pts: timestamp, progress: yaw, sharpness: 50, overlapSharpness: 50))
+    }
+    let second = recovery[1]
+    recovery[1] = Giro360ProfiledFrame(sample: second.sample, frameIndex: 200,
+      pts: 0.5, progress: step * 2, sharpness: 50, overlapSharpness: 50)
+    recovery.append(Giro360ProfiledFrame(sample: second.sample, frameIndex: 201,
+      pts: 2, progress: step * 2 + step * 0.1, sharpness: 50, overlapSharpness: 50))
+    let repaired = Giro360VideoSelector.select(recovery, bins: recoveryBins, laps: 1)
+    precondition(repaired.count == 1 && repaired[0].frames.count == recoveryBins)
+    precondition((repaired[0].frames[2]["frameIndex"] as? Int) == 201,
+      "Use the valid alternative instead of rejecting the whole lap")
+    let impossible = recovery.filter { $0.frameIndex != 201 }
+    precondition(Giro360VideoSelector.select(impossible, bins: recoveryBins, laps: 1).isEmpty)
+    print("PASS: chronological alternative recovered; impossible lap rejected")
     if CommandLine.arguments.count > 1 {
       let data = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
       let root = try JSONSerialization.jsonObject(with:data) as! [String:Any]

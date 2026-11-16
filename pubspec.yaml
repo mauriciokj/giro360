@@ -1,6 +1,6 @@
 name: giro360_capture
 description: Reusable ARKit video capture and OpenCV cylindrical panorama engine.
-version: 0.0.4
+version: 0.0.5
 homepage: https://github.com/mauriciokj/giro360
 repository: https://github.com/mauriciokj/giro360
 publish_to: "none"

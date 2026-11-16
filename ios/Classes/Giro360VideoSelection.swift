@@ -23,6 +23,13 @@ struct Giro360VideoSelection {
   let maxAdjacentDistance: Double
 }
 
+private struct Giro360FrameChoice {
+  let bin: Int
+  let frame: Giro360ProfiledFrame
+  let cost: Double
+  let target: Double
+}
+
 /// Scores complete, temporally ordered laps, including the circular neighbour.
 /// Distance to the session origin is diagnostic, not a sector eligibility gate.
 struct Giro360VideoSelector {
@@ -42,8 +49,7 @@ struct Giro360VideoSelector {
       let candidates = rows.filter { $0.progress >= start && $0.progress <= start + turn }
       guard !candidates.isEmpty else { return nil }
       let medianPitch = percentile(candidates.map(\.pitch), 0.5)
-      var chosen: [Giro360ProfiledFrame] = []
-      var frames: [[String: Any]] = []
+      var groups: [[Giro360FrameChoice]] = []
       for bin in 0..<bins {
         // Sector zero comes from the end of this lap, never the next lap.
         let target = start + (bin == 0 ? turn : Double(bin) * step)
@@ -56,7 +62,26 @@ struct Giro360VideoSelector {
           return abs(frame.progress - target) / step + 0.2 * frame.speed
             + 0.5 * abs(frame.pitch - medianPitch) - 0.15 * normalizedSharpness
         }
-        let best = nearby.min { cost($0) < cost($1) }!
+        groups.append(nearby.map {
+          Giro360FrameChoice(bin: bin, frame: $0, cost: cost($0), target: target)
+        })
+      }
+      guard groups.count >= max(24, Int(Double(bins) * 0.75)) else { return nil }
+      var choices = groups.map { $0.min { $0.cost < $1.cost }! }
+      let chronological = choices.sorted { $0.frame.progress < $1.frame.progress }
+      if !zip(chronological, chronological.dropFirst()).allSatisfy({ $0.frame.pts < $1.frame.pts }) {
+        // When a user briefly reverses direction, the best independent
+        // candidates can be out of time order although valid alternatives exist.
+        // Keep the established selection unchanged unless this recovery is needed.
+        guard let recovered = orderedChoices(groups, bins: bins) else { return nil }
+        choices = recovered.sorted { $0.bin < $1.bin }
+      }
+      let chosen = choices.map(\.frame)
+      var frames: [[String: Any]] = []
+      for choice in choices {
+        let best = choice.frame
+        let bin = choice.bin
+        let target = choice.target
         var value = best.sample
         value["binIndex"] = bin
         value["lapIndex"] = lap
@@ -65,16 +90,12 @@ struct Giro360VideoSelector {
         value["centerErrorRadians"] = abs(best.progress - target)
         value["sharpnessScore"] = best.sharpness
         value["overlapSharpnessScore"] = best.overlapSharpness
-        value["qualityScore"] = -cost(best)
+        value["qualityScore"] = -choice.cost
         value["frameIndex"] = best.frameIndex
         value["ptsSeconds"] = best.pts
-        value["selectionSource"] = "post_capture_continuity_v1"
-        chosen.append(best)
+        value["selectionSource"] = "post_capture_continuity_v2"
         frames.append(value)
       }
-      guard frames.count >= max(24, Int(Double(bins) * 0.75)) else { return nil }
-      let chronological = chosen.sorted { $0.progress < $1.progress }
-      guard zip(chronological, chronological.dropFirst()).allSatisfy({ $0.pts < $1.pts }) else { return nil }
       let pitches = chosen.map(\.pitch)
       let pitchSpan = (pitches.max() ?? 0) - (pitches.min() ?? 0)
       let distances = chosen.indices.map { i -> Double in
@@ -97,5 +118,40 @@ struct Giro360VideoSelector {
       if $0.score != $1.score { return $0.score < $1.score }
       return $0.lapIndex < $1.lapIndex
     }
+  }
+
+  private static func orderedChoices(_ groups: [[Giro360FrameChoice]], bins: Int)
+      -> [Giro360FrameChoice]? {
+    // Bin zero comes from the end of the lap and is last in time.
+    let ordered = groups.sorted {
+      ($0[0].bin == 0 ? bins : $0[0].bin) < ($1[0].bin == 0 ? bins : $1[0].bin)
+    }
+    var costs = ordered[0].map(\.cost)
+    var predecessors: [[Int]] = [Array(repeating: -1, count: ordered[0].count)]
+    for groupIndex in 1..<ordered.count {
+      var nextCosts = Array(repeating: Double.infinity, count: ordered[groupIndex].count)
+      var previousIndices = Array(repeating: -1, count: ordered[groupIndex].count)
+      for (index, current) in ordered[groupIndex].enumerated() {
+        for (previousIndex, previous) in ordered[groupIndex - 1].enumerated()
+          where previous.frame.pts < current.frame.pts {
+          let candidate = costs[previousIndex] + current.cost
+          if candidate < nextCosts[index] {
+            nextCosts[index] = candidate
+            previousIndices[index] = previousIndex
+          }
+        }
+      }
+      costs = nextCosts
+      predecessors.append(previousIndices)
+    }
+    guard let finalIndex = costs.indices.min(by: { costs[$0] < costs[$1] }),
+          costs[finalIndex].isFinite else { return nil }
+    var index = finalIndex
+    var result: [Giro360FrameChoice] = []
+    for groupIndex in stride(from: ordered.count - 1, through: 0, by: -1) {
+      result.append(ordered[groupIndex][index])
+      index = predecessors[groupIndex][index]
+    }
+    return result.reversed()
   }
 }

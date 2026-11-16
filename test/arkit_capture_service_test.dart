@@ -17,6 +17,16 @@ void main() {
     expect(GuidedAlignmentMode.videoRefine.label, 'ORB vídeo coerente');
   });
 
+  test('round-trips recent motion without inventing it for old status maps', () {
+    final old = Giro360CaptureStatus.fromMap(_statusMap(complete: false));
+    expect(old.recentTranslationMeters, isNull);
+    final map = _statusMap(complete: false)..['recentTranslationMeters'] = 0.06;
+    final restored = Giro360CaptureStatus.fromMap(
+      Giro360CaptureStatus.fromMap(map).toMap(),
+    );
+    expect(restored.recentTranslationMeters, 0.06);
+  });
+
   test('preserves post-capture timing and encoded frame identity in snapshots',
       () {
     final input = _statusMap(complete: true);

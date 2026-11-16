@@ -278,6 +278,8 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
   private var maxProgress = 0.0
   private var currentTranslationMeters = 0.0
   private var maxTranslationMeters = 0.0
+  private var recentMotion = Giro360MotionWindow()
+  private var recentTranslationMeters: Double?
   private var currentPitch = 0.0
   private var currentRoll = 0.0
   private var currentAngularSpeed = 0.0
@@ -354,6 +356,8 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       maxProgress = 0
       currentTranslationMeters = 0
       maxTranslationMeters = 0
+      recentMotion.reset()
+      recentTranslationMeters = nil
       currentPitch = 0
       currentRoll = 0
       currentAngularSpeed = 0
@@ -463,6 +467,7 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
       "currentAngularSpeed": currentAngularSpeed,
       "currentTranslationMeters": currentTranslationMeters,
       "maxTranslationMeters": maxTranslationMeters,
+      "recentTranslationMeters": recentTranslationMeters.map { $0 as Any } ?? NSNull(),
       "processedFrameCount": processedFrameCount,
       "encodedCandidateCount": encodedCandidateCount,
       "recordedVideoFrameCount": recordedVideoFrameCount,
@@ -515,6 +520,16 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
     let roll = Double(frame.camera.eulerAngles.z)
     currentPitch = pitch
     currentRoll = roll
+
+    if case .normal = frame.camera.trackingState {
+      recentTranslationMeters = recentMotion.record(
+        timestamp: frame.timestamp,
+        position: SIMD3<Double>(Double(position.x), Double(position.y), Double(position.z))
+      )
+    } else {
+      recentMotion.reset()
+      recentTranslationMeters = nil
+    }
 
     if firstFrameTimestamp == nil {
       // Establish the origin only after ARKit has a usable world reference.
@@ -592,11 +607,15 @@ private final class Giro360ArkitCaptureCoordinator: NSObject, ARSessionDelegate 
 
     if currentTranslationMeters > 0.12 {
       rejectedTranslationFrameCount += 1
-      message = "A lente saiu do eixo. Reposicione o celular sem voltar a rotação."
-    } else if movingWrongDirection {
-      message = "Continue no mesmo sentido da volta."
-    } else if case .normal = frame.camera.trackingState {
-      message = "Continue devagar, mantendo a lente no mesmo ponto."
+    }
+    if case .normal = frame.camera.trackingState {
+      if movingWrongDirection {
+        message = "Continue no mesmo sentido da volta."
+      } else if (recentTranslationMeters ?? 0) > 0.05 {
+        message = "Mantenha a lente estável enquanto gira devagar."
+      } else {
+        message = "Continue devagar, mantendo a lente no mesmo ponto."
+      }
     } else {
       rejectedTrackingFrameCount += 1
       message = "Rastreamento limitado. Diminua a velocidade e aponte para detalhes."

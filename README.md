@@ -32,7 +32,7 @@ dependencies:
   giro360_capture:
     git:
       url: git@github.com:mauriciokj/giro360.git
-      ref: v0.0.1
+      ref: <commit-ou-tag-publicada>
   path_provider: ^2.1.5
 ```
 
@@ -110,6 +110,13 @@ const Stack(
 O `Giro360CaptureStatus` inclui progresso, tracking ARKit, sentido do giro,
 deslocamento da lente, pitch, roll, quantidade de frames e caminhos dos
 artefatos nativos.
+
+`currentTranslationMeters` mede a distância estimada ao ponto inicial;
+`recentTranslationMeters` mede a maior distância entre poses observadas nos
+últimos dois segundos de rastreamento normal. O segundo campo é `null` quando a
+janela ainda não tem dados suficientes ou o rastreamento é interrompido. Ele
+ajuda a orientar a captura na mão, mas não garante ausência de paralaxe. A
+posição da lente ainda deve permanecer o mais estável possível durante a volta.
 
 ## Arquivos gerados
 

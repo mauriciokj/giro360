@@ -16,6 +16,16 @@ Ao concluir a rotação, o SDK salva o vídeo e a telemetria, examina as imagens
 
 Não há certificado automático de qualidade: paralaxe, desfoque, oclusões e falta de cobertura continuam podendo produzir defeitos. A projeção calibrada, graph cut e malha local do laboratório não foram habilitadas no montador.
 
+Desde a versão 0.0.5, se os melhores candidatos individuais de uma volta não
+estiverem em ordem temporal, o seletor procura uma sequência ordenada entre as
+alternativas dos mesmos setores. Quando a seleção original já está em ordem,
+ela permanece inalterada. O diagnóstico registra `selectionVersion: 2`.
+
+O status da captura também pode informar `recentTranslationMeters`: a maior
+distância entre posições estimadas pelo ARKit numa janela de até dois segundos.
+Esse indicador é independente da distância à origem, expira ao perder o
+rastreamento e não substitui a inspeção visual nem mede profundidade da cena.
+
 ## Validação realizada
 
 A captura na mão de 9 de setembro foi processada por Swift/AVFoundation no Mac e no iPhone 16e. Ambos escolheram os mesmos 60 quadros da segunda volta, também iguais à seleção Python aprovada visualmente. A diferença média por canal entre os panoramas Swift do Mac e do iPhone foi 0,00131/255. Isso não significa JPEG idêntico ao laboratório Python, pois a extração/compressão são diferentes.
