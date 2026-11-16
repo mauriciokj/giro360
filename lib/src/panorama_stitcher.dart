@@ -4,6 +4,7 @@ import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
 
+import 'ios_stitch_functions.dart';
 import 'stitch_frame_telemetry.dart';
 
 typedef _NativeStitch = ffi.Int32 Function(
@@ -159,11 +160,41 @@ class PanoramaStitcher implements Giro360StitchBackend {
             ? frameTelemetry.map((frame) => frame.actualPitch).toList()
             : null;
 
+    IosStitchFunctions? iosFunctions;
+    if (Platform.isIOS) {
+      try {
+        iosFunctions = await IosStitchFunctions.load();
+      } catch (error) {
+        throw StitchingException(
+          'Não foi possível acessar o motor nativo de costura: $error',
+        );
+      }
+    }
+
     return Isolate.run(() {
-      final stitch = _loadStitchFunction();
-      final stitchWithOptionsV2 = _tryLoadStitchWithOptionsV2Function();
-      final stitchWithOptions = _tryLoadStitchWithOptionsFunction();
-      final stitchWithTelemetry = _tryLoadStitchWithTelemetryFunction();
+      final stitch = iosFunctions == null
+          ? _loadStitchFunction()
+          : ffi.Pointer<ffi.NativeFunction<_NativeStitch>>.fromAddress(
+              iosFunctions.stitch,
+            ).asFunction<_DartStitch>();
+      final stitchWithOptionsV2 = iosFunctions == null
+          ? _tryLoadStitchWithOptionsV2Function()
+          : ffi.Pointer<
+              ffi.NativeFunction<_NativeStitchWithOptionsV2>>.fromAddress(
+              iosFunctions.optionsV2,
+            ).asFunction<_DartStitchWithOptionsV2>();
+      final stitchWithOptions = iosFunctions == null
+          ? _tryLoadStitchWithOptionsFunction()
+          : ffi.Pointer<
+              ffi.NativeFunction<_NativeStitchWithOptions>>.fromAddress(
+              iosFunctions.options,
+            ).asFunction<_DartStitchWithOptions>();
+      final stitchWithTelemetry = iosFunctions == null
+          ? _tryLoadStitchWithTelemetryFunction()
+          : ffi.Pointer<
+              ffi.NativeFunction<_NativeStitchWithTelemetry>>.fromAddress(
+              iosFunctions.telemetry,
+            ).asFunction<_DartStitchWithTelemetry>();
       final imagePaths = calloc<ffi.Pointer<Utf8>>(inputPaths.length);
       final allocatedStrings = <ffi.Pointer<Utf8>>[];
       final outputPath = outputPathText.toNativeUtf8();

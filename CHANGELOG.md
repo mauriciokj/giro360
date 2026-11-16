@@ -1,3 +1,8 @@
+## 0.0.6
+
+- Fix iOS App Store and TestFlight archives whose stripped symbols prevented
+  the app from calling the linked OpenCV panorama engine.
+
 ## 0.0.5
 
 - Report recent camera displacement over two seconds of normal ARKit tracking,

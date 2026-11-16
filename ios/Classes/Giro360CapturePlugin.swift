@@ -7,6 +7,9 @@ import UIKit
 @_silgen_name("giro360_stitch_link_anchor")
 private func giro360StitchLinkAnchor()
 
+@_silgen_name("giro360_stitch_function_address")
+private func giro360StitchFunctionAddress(_ function: Int32) -> UInt
+
 public final class Giro360CapturePlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
   private static let channelName = "giro360_capture/methods"
   private static let eventChannelName = "giro360_capture/events"
@@ -43,6 +46,13 @@ public final class Giro360CapturePlugin: NSObject, FlutterPlugin, FlutterStreamH
 
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
+    case "stitchFunctionAddresses":
+      result([
+        "stitch": Int64(bitPattern: UInt64(giro360StitchFunctionAddress(0))),
+        "telemetry": Int64(bitPattern: UInt64(giro360StitchFunctionAddress(1))),
+        "options": Int64(bitPattern: UInt64(giro360StitchFunctionAddress(2))),
+        "optionsV2": Int64(bitPattern: UInt64(giro360StitchFunctionAddress(3))),
+      ])
     case "isSupported":
       result(ARWorldTrackingConfiguration.isSupported)
     case "startCapture":

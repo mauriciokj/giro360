@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <iomanip>
@@ -3690,4 +3691,17 @@ GIRO360_EXPORT int giro360_stitch_with_options_v2(
       output_path,
       error_buffer,
       error_buffer_length);
+}
+
+// Dart resolves the addresses through the registered iOS plugin instead of
+// dlsym: Xcode can strip exported executable symbols when archiving an app.
+// Taking each address here also keeps the implementations reachable at link time.
+GIRO360_EXPORT uintptr_t giro360_stitch_function_address(int function) {
+  switch (function) {
+    case 0: return reinterpret_cast<uintptr_t>(&giro360_stitch);
+    case 1: return reinterpret_cast<uintptr_t>(&giro360_stitch_with_telemetry);
+    case 2: return reinterpret_cast<uintptr_t>(&giro360_stitch_with_options);
+    case 3: return reinterpret_cast<uintptr_t>(&giro360_stitch_with_options_v2);
+    default: return 0;
+  }
 }
